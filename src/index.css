@@ -1,0 +1,168 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------------------------
+   Coffee Ledger — "Card Stock"
+
+   A monochrome system on warm-grey stock, carried over from the same theme
+   used for Card Catalog. The only hue in the whole interface is --status,
+   used for a starred shot — the one thing worth spotting without reading —
+   plus --destructive for irreversible actions. Everything else, including
+   the shot log table, stays neutral.
+--------------------------------------------------- */
+:root {
+  --radius: 0.1875rem;
+
+  --background: #efeeea;
+  --foreground: #1a1a17;
+
+  --card: #fbfaf8;
+  --card-foreground: #1a1a17;
+  --popover: #fbfaf8;
+  --popover-foreground: #1a1a17;
+
+  --primary: #1a1a17;
+  --primary-foreground: #fbfaf8;
+
+  --secondary: #e4e2db;
+  --secondary-foreground: #1a1a17;
+
+  --muted: #e4e2db;
+  --muted-foreground: #66645c;
+
+  --accent: #e4e2db;
+  --accent-foreground: #1a1a17;
+
+  --border: #d8d6ce;
+  --input: #d8d6ce;
+  --ring: #1a1a17;
+
+  /* The only color in the system. */
+  --status: #cfe6cd;
+  --status-foreground: #2c5228;
+  --destructive: #a6432f;
+  --destructive-foreground: #fbfaf8;
+
+  --shadow-card: 0 1px 0 rgb(26 26 23 / 0.05), 0 5px 14px -10px rgb(26 26 23 / 0.4);
+}
+
+.dark {
+  --background: #131311;
+  --foreground: #edebe4;
+
+  --card: #1b1b18;
+  --card-foreground: #edebe4;
+  --popover: #1b1b18;
+  --popover-foreground: #edebe4;
+
+  /* Monochrome means the primary fill inverts rather than shifting hue. */
+  --primary: #edebe4;
+  --primary-foreground: #171714;
+
+  --secondary: #26251f;
+  --secondary-foreground: #edebe4;
+
+  --muted: #26251f;
+  --muted-foreground: #97948a;
+
+  --accent: #2e2d28;
+  --accent-foreground: #edebe4;
+
+  --border: #2e2d28;
+  --input: #2e2d28;
+  --ring: #edebe4;
+
+  --status: #1f3a1d;
+  --status-foreground: #9ed49a;
+  --destructive: #d4634a;
+  --destructive-foreground: #171714;
+
+  --shadow-card: 0 1px 0 rgb(0 0 0 / 0.3), 0 5px 16px -10px rgb(0 0 0 / 0.7);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-status: var(--status);
+  --color-status-foreground: var(--status-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 1px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 3px);
+  --radius-xl: calc(var(--radius) + 7px);
+
+  --shadow-card: var(--shadow-card);
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    line-height: 1.5;
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Headings run in Instrument Sans — a grotesque that stays legible at card-title
+   sizes on a phone, where a high-contrast serif does not. Tightening the
+   tracking is what gives it presence at display sizes. */
+@utility display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+/* The third type role, in two tiers. `label-mono` names things — section
+   headings, column headers, chips, toggles. `meta-mono` carries data — grind
+   settings, times, temperatures. Everything small in the interface is one or
+   the other; nothing invents its own size. */
+@utility label-mono {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem; /* 11px */
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+@utility meta-mono {
+  font-family: var(--font-mono);
+  font-size: 0.75rem; /* 12px */
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}
