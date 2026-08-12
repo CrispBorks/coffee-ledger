@@ -41,7 +41,25 @@ export function BackLink({ to = "/", children = "Back to ledger" }) {
 export function SiteFooter() {
   return (
     <footer className="no-print mt-16 border-t border-border pt-6 text-[13px] text-muted-foreground">
-      Made with{" "}
+      With ❤️ from{" "}
+      <a
+        className="underline underline-offset-2 hover:text-foreground"
+        href="https://atharva-bhagwat.github.io/"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Atharva
+      </a>{" "}
+      and{" "}
+      <a
+        className="underline underline-offset-2 hover:text-foreground"
+        href="https://www.yashraut.com/"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Yash
+      </a>{" "}
+      · Made with{" "}
       <a
         className="underline underline-offset-2 hover:text-foreground"
         href="https://claude.ai/"
