@@ -114,13 +114,28 @@ a preview deployment, to exercise them.
 ## Tests
 
 ```bash
-npm test        # ~3s, no browser and no database needed
+npm test        # ~8s, no browser and no deployment needed
 ```
 
-They cover the two things that could quietly lose someone's shot log: the write
-queue in `src/lib/ledger.ts` — ordering, coalescing, what happens to a refused
-write — and the auth gate in `api/session.ts`. Both run against a stubbed
-`fetch` rather than a deployment.
+Three suites, covering the parts that could quietly lose someone's shot log:
+
+- **The write queue** in `src/lib/ledger.ts` — ordering, coalescing, flush on
+  close, and what happens to a write the server refuses. Driven against a
+  stubbed `fetch`.
+- **The auth gate** in `api/session.ts` — the only thing between a public URL
+  and your ledger.
+- **The routes**, against a real Postgres. `tests/api.test.ts` runs the
+  handlers in `api/` over [PGlite](https://pglite.dev) — Postgres 18 compiled
+  to wasm — so the SQL is executed rather than described: the tables really are
+  created, an upsert really does update instead of duplicating, `created_at`
+  really does survive an edit, and deleting a coffee really does take its shots
+  with it.
+
+Only the Neon HTTP transport is stubbed there, and the last test in that file
+holds the stub against the real `@neondatabase/serverless` client to check they
+put the same SQL and the same parameters on the wire — including that Neon
+sends every parameter as text, which is what `to_timestamp($n / 1000.0)` and
+the boolean columns depend on.
 
 ## Build
 
