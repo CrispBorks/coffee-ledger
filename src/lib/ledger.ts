@@ -59,9 +59,7 @@ export type LedgerState = {
   failed: number;
   /** Why the last write failed. */
   writeError: string;
-  /** The deployment has a key set and this device hasn't given it. */
-  needsKey: boolean;
-  /** The deployment has no database or no key configured at all. */
+  /** The deployment has no database connected, so nothing can be stored. */
   needsSetup: boolean;
   /** Coffees found in this browser's localStorage from before the database. */
   legacy: number;
@@ -75,7 +73,6 @@ let state: LedgerState = {
   unsaved: 0,
   failed: 0,
   writeError: "",
-  needsKey: false,
   needsSetup: false,
   legacy: 0,
 };
@@ -94,10 +91,7 @@ function subscribe(fn: () => void) {
 
 /* -------------------------------------------------------------- transport */
 
-type Payload = { error?: string; needsKey?: boolean; needsSetup?: boolean } & Record<
-  string,
-  unknown
->;
+type Payload = { error?: string; needsSetup?: boolean } & Record<string, unknown>;
 
 async function request(
   url: string,
@@ -265,7 +259,7 @@ async function send(
   }
 
   if (res.ok) {
-    if (state.needsKey || state.needsSetup) patch({ needsKey: false, needsSetup: false });
+    if (state.needsSetup) patch({ needsSetup: false });
     return "done";
   }
   if (res.status === 404 && goneIsFine) return "done";
@@ -273,10 +267,6 @@ async function send(
   const said = res.data?.error;
   if (res.data === null) return { retry: NOT_RUNNING };
 
-  if (res.status === 401) {
-    patch({ needsKey: true });
-    return { retry: said ?? "The ledger key is needed before this can be saved." };
-  }
   if (res.status === 503) {
     patch({ needsSetup: true });
     return { retry: said ?? "Saving isn't set up on this deployment." };
@@ -437,38 +427,6 @@ export function retryFailed() {
   failed.clear();
   for (const job of held) enqueue(job.key, job.run);
   if (held.length === 0) patch({});
-}
-
-/* ------------------------------------------------------------------ auth */
-
-export async function signIn(key: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  let res: Awaited<ReturnType<typeof request>>;
-  try {
-    res = await request("/api/session", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ key }),
-    });
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-
-  if (!res.ok || res.data === null) {
-    return { ok: false, error: res.data?.error ?? NOT_RUNNING };
-  }
-
-  patch({ needsKey: false });
-  retryFailed();
-  return { ok: true };
-}
-
-export async function signOut(): Promise<void> {
-  try {
-    await request("/api/session", { method: "DELETE" });
-  } catch {
-    /* signing out of a ledger you can't reach is already true */
-  }
-  patch({ needsKey: true });
 }
 
 /* ------------------------------------------- the ledger that was in a tab */

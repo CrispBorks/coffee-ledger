@@ -5,13 +5,13 @@
  *  DELETE → ?id=…         remove a coffee and every shot logged against it
  *
  *  Shots are written one at a time through /api/shots, which imports the
- *  connection and the auth gate from here. Two routes rather than one whole-
- *  ledger document because the shot log is the point of the thing: editing a
- *  dose should write that dose, not re-post every bag you own — and rows mean
- *  a later "every starred shot on the Niche" is a query, not a scan in JS.
+ *  connection from here. Two routes rather than one whole-ledger document
+ *  because the shot log is the point of the thing: editing a dose should write
+ *  that dose, not re-post every bag you own — and rows mean a later "every
+ *  starred shot on the Niche" is a query, not a scan in JS.
  *
- *  Writes need the key in LEDGER_WRITE_KEY; without it this would be a public
- *  write endpoint on a public URL. Reads are open, like the rest of the site. */
+ *  There is no key on these routes. The ledger is open to whoever can reach
+ *  the URL, which is a deployment-level question — see the README. */
 
 import { neon } from "@neondatabase/serverless";
 
@@ -24,7 +24,6 @@ import {
   type Entry,
   type Shot,
 } from "../src/lib/ledger-types.js";
-import { checkWriteAccess } from "./session.js";
 
 export type Req = {
   method?: string;
@@ -291,12 +290,6 @@ export default async function handler(req: Req, res: Res) {
       res.status(200).json({
         entries: entryRows.map((row) => rowToEntry(row, byEntry.get(row.id) ?? [])),
       });
-      return;
-    }
-
-    const denied = checkWriteAccess(req);
-    if (denied) {
-      res.status(denied.status).json(denied.body);
       return;
     }
 

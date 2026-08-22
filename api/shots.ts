@@ -20,7 +20,6 @@ import {
   type Res,
   type ShotRow,
 } from "./entries.js";
-import { checkWriteAccess } from "./session.js";
 
 /** Postgres reports a missing parent row as foreign_key_violation (23503).
  *  It means the coffee was deleted between the page loading and this write,
@@ -36,12 +35,6 @@ export default async function handler(req: Req, res: Res) {
   const method = req.method ?? "GET";
   if (method !== "POST" && method !== "DELETE") {
     res.status(405).json({ error: "Use POST or DELETE." });
-    return;
-  }
-
-  const denied = checkWriteAccess(req);
-  if (denied) {
-    res.status(denied.status).json(denied.body);
     return;
   }
 

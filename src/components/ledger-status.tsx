@@ -1,25 +1,8 @@
 import * as React from "react";
 import { AlertTriangleIcon, CloudOffIcon, LoaderIcon, RefreshCwIcon } from "lucide-react";
 
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  dismissLegacy,
-  importLegacy,
-  loadLedger,
-  retryFailed,
-  signIn,
-  useLedger,
-} from "@/lib/ledger";
+import { dismissLegacy, importLegacy, loadLedger, retryFailed, useLedger } from "@/lib/ledger";
 
 /** The one piece of chrome the database added: a corner that says whether what
  *  you just typed is anywhere but this screen.
@@ -28,117 +11,45 @@ import {
  *  that saving is not a button you press, so the only thing worth showing is
  *  when it hasn't worked. Rendered by PageShell, so it's on every page. */
 export function LedgerStatus() {
-  const { saving, unsaved, failed, writeError, needsKey, needsSetup } = useLedger();
+  const { saving, unsaved, failed, writeError } = useLedger();
 
-  const showPill = failed > 0 || writeError !== "" || (saving && unsaved > 0);
-  if (!showPill && !needsKey) return null;
+  if (failed === 0 && writeError === "" && !(saving && unsaved > 0)) return null;
+  const wrong = failed > 0 || writeError !== "";
 
   return (
-    <>
-      {showPill && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="no-print fixed right-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 max-w-[min(26rem,calc(100vw-2rem))] rounded-md border border-border bg-card px-3 py-2.5 shadow-card"
-        >
-          <div className="flex items-start gap-2.5">
-            {failed > 0 || writeError !== "" ? (
-              <AlertTriangleIcon className="mt-px size-4 shrink-0 text-destructive" />
-            ) : (
-              <LoaderIcon className="mt-px size-4 shrink-0 animate-spin text-muted-foreground" />
-            )}
+    <div
+      role="status"
+      aria-live="polite"
+      className="no-print fixed right-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 max-w-[min(26rem,calc(100vw-2rem))] rounded-md border border-border bg-card px-3 py-2.5 shadow-card"
+    >
+      <div className="flex items-start gap-2.5">
+        {wrong ? (
+          <AlertTriangleIcon className="mt-px size-4 shrink-0 text-destructive" />
+        ) : (
+          <LoaderIcon className="mt-px size-4 shrink-0 animate-spin text-muted-foreground" />
+        )}
 
-            <div className="min-w-0">
-              <p className="text-[13px] leading-snug">
-                {failed > 0
-                  ? `${failed} change${failed === 1 ? "" : "s"} not saved`
-                  : writeError !== ""
-                    ? "That change wasn't saved"
-                    : "Saving…"}
-              </p>
-              {writeError !== "" && (
-                <p className="mt-1 text-[12px] leading-snug text-muted-foreground">
-                  {writeError}
-                </p>
-              )}
-            </div>
-
-            {failed > 0 && (
-              <Button size="sm" variant="outline" className="shrink-0" onClick={retryFailed}>
-                <RefreshCwIcon />
-                Retry
-              </Button>
-            )}
-          </div>
+        <div className="min-w-0">
+          <p className="text-[13px] leading-snug">
+            {failed > 0
+              ? `${failed} change${failed === 1 ? "" : "s"} not saved`
+              : writeError !== ""
+                ? "That change wasn't saved"
+                : "Saving…"}
+          </p>
+          {writeError !== "" && (
+            <p className="mt-1 text-[12px] leading-snug text-muted-foreground">{writeError}</p>
+          )}
         </div>
-      )}
 
-      <LedgerKeyDialog open={needsKey && !needsSetup} />
-    </>
-  );
-}
-
-/** Asked once per device and then not again — the key is traded for a session
- *  cookie that outlives anything localStorage can hold on iOS. It appears the
- *  first time a change is refused, wherever you happened to be working. */
-function LedgerKeyDialog({ open }: { open: boolean }) {
-  const [key, setKey] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState("");
-
-  const submit = async () => {
-    setBusy(true);
-    setError("");
-    const result = await signIn(key);
-    setBusy(false);
-    if (result.ok) setKey("");
-    else setError(result.error);
-  };
-
-  return (
-    <AlertDialog open={open}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Unlock the ledger</AlertDialogTitle>
-          <AlertDialogDescription>
-            Reading the ledger is open; changing it needs the key set in the
-            deployment's{" "}
-            <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-[12px]">
-              LEDGER_WRITE_KEY
-            </code>
-            . Enter it once and this device stays signed in. Nothing you've typed is
-            lost in the meantime — it saves as soon as this is through.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
-          className="flex flex-col gap-2"
-        >
-          <Label htmlFor="ledger-key" className="label-mono text-muted-foreground">
-            Ledger key
-          </Label>
-          <Input
-            id="ledger-key"
-            type="password"
-            autoComplete="current-password"
-            autoFocus
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-          />
-          {error !== "" && <p className="text-[13px] text-destructive">{error}</p>}
-
-          <AlertDialogFooter className="mt-2">
-            <Button type="submit" disabled={key.trim() === "" || busy}>
-              {busy ? "Checking…" : "Unlock"}
-            </Button>
-          </AlertDialogFooter>
-        </form>
-      </AlertDialogContent>
-    </AlertDialog>
+        {failed > 0 && (
+          <Button size="sm" variant="outline" className="shrink-0" onClick={retryFailed}>
+            <RefreshCwIcon />
+            Retry
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -8,9 +8,12 @@ Vite + Tailwind v4 + shadcn/ui (Radix) + react-router.
 
 ## Data
 
-Entries live in Postgres, behind three serverless functions in `api/`. The
-ledger follows you between the phone and the laptop, and clearing site data no
-longer clears it.
+Entries live in Postgres, behind two serverless functions in `api/`. The ledger
+follows you between the phone and the laptop, and clearing site data no longer
+clears it.
+
+There is nothing to sign in to and nothing to type once. Open it, add a coffee,
+it's saved.
 
 There is no Save button, and there wasn't one before either — the shot log is
 edited in place, a cell at a time, and that hasn't changed. What happens under
@@ -63,25 +66,27 @@ A static single-page build on Vercel, plus `api/`. `vercel.json` rewrites every
 path except `/api/*` to `index.html`, so deep links like `/entry/abc123`
 resolve on a hard refresh — any host needs that same SPA fallback.
 
-Two things to set up once, both on free tiers:
+One thing to set up, on the free tier:
 
-1. **A Postgres database.** Vercel dashboard → Storage → Neon (Vercel Postgres
-   is Neon now; `@vercel/postgres` is deprecated). Connect it to the project
-   and it sets `DATABASE_URL` for you. The tables are created on first use.
+**A Postgres database.** Vercel dashboard → Storage → Neon (Vercel Postgres is
+Neon now; `@vercel/postgres` is deprecated). Connect it to the project and it
+sets `DATABASE_URL` for you. The tables are created on first use — no migration
+step, no seed, and no second environment variable.
 
-2. **`LEDGER_WRITE_KEY`** as an environment variable — any passphrase. Reads
-   are public like the rest of the site, but without this anyone who found the
-   URL could write to your ledger, so changes refuse to save until it's set.
+Skip it and the ledger still loads; it just says plainly that saving isn't set
+up rather than pretending an edit was stored.
 
-   The app asks for the key the first time a device tries to change something,
-   trades it at `POST /api/session` for a year-long `HttpOnly` cookie, and
-   doesn't ask again. A cookie rather than `localStorage` because Safari caps
-   anything JavaScript writes at seven days — on iOS that's the difference
-   between typing the key once and typing it every week. The write routes also
-   accept an `x-ledger-key` header, so the API stays usable from curl.
+### Who can write to it
 
-Skip either and the ledger still loads and reads; it just says plainly that
-saving isn't set up rather than pretending an edit was stored.
+Nobody has to type anything, which is the point — and it means the routes are
+open to whoever can reach the URL. Reads were always public; now writes are too.
+
+Keeping the ledger private is a deployment setting rather than something the app
+asks you for. Vercel's **Deployment Protection** (Project → Settings →
+Deployment Protection) puts either a password or your Vercel login in front of
+the whole site, functions included. It's one switch, it's free on a personal
+project, and unlike a key in the app there's nothing to re-enter on a new
+phone.
 
 ### The routes
 
@@ -92,7 +97,6 @@ saving isn't set up rather than pretending an edit was stored.
 | `DELETE /api/entries?id=` | remove a coffee and every shot logged against it |
 | `POST /api/shots` | add or replace one shot, by id |
 | `DELETE /api/shots?id=` | remove one shot |
-| `POST /api/session` | trade the key for a cookie · `DELETE` signs out |
 
 ### Coming from the localStorage version
 
@@ -107,14 +111,21 @@ npm install
 npm run dev
 ```
 
-`npm run dev` serves the app only — Vite doesn't run the functions in `api/`,
-so the ledger will report that the routes aren't running. Use `vercel dev`, or
-a preview deployment, to exercise them.
+That's the whole setup. The dev server runs the functions in `api/` as well as
+the app, so the ledger works immediately — no `vercel dev`, no account, no
+database to provision. With no `DATABASE_URL` set it keeps a local Postgres in
+`.pglite/` ([PGlite](https://pglite.dev), Postgres 18 compiled to wasm, so it's
+the real thing rather than a mock). Set `DATABASE_URL` and it uses that
+instead, which is how you point local development at a real branch.
+
+The plugin doing this is `dev/api-plugin.ts`. It's `apply: "serve"`, so none of
+it reaches the build — production is still Vercel's functions and Neon — and it
+loads the same handler files rather than a copy of them.
 
 ## Tests
 
 ```bash
-npm test        # ~8s, no browser and no deployment needed
+npm test        # ~4s, no browser and no deployment needed
 ```
 
 Three suites, covering the parts that could quietly lose someone's shot log:
@@ -122,8 +133,8 @@ Three suites, covering the parts that could quietly lose someone's shot log:
 - **The write queue** in `src/lib/ledger.ts` — ordering, coalescing, flush on
   close, and what happens to a write the server refuses. Driven against a
   stubbed `fetch`.
-- **The auth gate** in `api/session.ts` — the only thing between a public URL
-  and your ledger.
+- **The shapes crossing the wire** in `src/lib/ledger-types.ts`, which is what
+  stops a partial write blanking a column it didn't mention.
 - **The routes**, against a real Postgres. `tests/api.test.ts` runs the
   handlers in `api/` over [PGlite](https://pglite.dev) — Postgres 18 compiled
   to wasm — so the SQL is executed rather than described: the tables really are

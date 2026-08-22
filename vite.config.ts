@@ -4,8 +4,12 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+import { devApi } from "./dev/api-plugin";
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  // devApi runs the functions in api/ during `npm run dev`; it applies to the
+  // dev server only and contributes nothing to the build.
+  plugins: [react(), tailwindcss(), devApi()],
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
   },

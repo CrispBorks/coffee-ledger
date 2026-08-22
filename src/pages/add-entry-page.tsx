@@ -45,7 +45,7 @@ export function AddEntryPage() {
       {(needsSetup || status === "unreachable") && (
         <p className="mt-5 rounded-md border border-dashed border-destructive/50 p-4 text-[13px] text-muted-foreground">
           {needsSetup
-            ? "This deployment has no database connected yet, so a coffee added here won't be stored. See the README for the two settings it needs."
+            ? "This deployment has no database connected yet, so a coffee added here won't be stored. Connecting one in the Vercel dashboard is the only setup there is — see the README."
             : "The ledger can't be reached right now. A coffee added here is kept on this screen and saved as soon as the connection is back — but don't close the tab until it has."}
         </p>
       )}

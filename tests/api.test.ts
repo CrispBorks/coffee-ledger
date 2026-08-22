@@ -5,17 +5,18 @@
  *  described. Only the transport is stubbed: `neon()` is swapped for a tagged
  *  template that runs the identical text and parameters against PGlite.
  *
- *  Identical is load-bearing, so the last test in this file holds the stub
- *  against the real driver. Note in particular that Neon sends every parameter
- *  as text over HTTP — `starred` arrives as "true" and a timestamp as
- *  "1700000000000" — and the stub does the same, because a number that only
- *  works while it is still a number would pass here and fail in production.
+ *  Identical is load-bearing, so the stub lives in tests/neon-stub.ts and
+ *  tests/neon-contract.test.ts holds it against the real client — including
+ *  that Neon sends every parameter as text over HTTP.
  *
  *  What this is really checking is the set of things a mocked database would
  *  have happily agreed to and Postgres won't: that the tables get created,
  *  that an upsert updates rather than duplicates, that created_at survives an
  *  edit, that deleting a coffee takes its shots with it, and that a shot
- *  can't be logged against a coffee that isn't there. */
+ *  can't be logged against a coffee that isn't there.
+ *
+ *  There is no key on these routes, so there is nothing to sign in as here —
+ *  a request either makes sense to Postgres or it doesn't. */
 
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,34 +25,17 @@ const holder = vi.hoisted(() => ({
   run: null as null | ((text: string, params: unknown[]) => Promise<Record<string, unknown>[]>),
 }));
 
-/** What the driver puts on the wire: numbered placeholders, and every value
- *  rendered as text for Postgres to infer a type for. */
-function toQuery(strings: TemplateStringsArray, values: unknown[]) {
+vi.mock("@neondatabase/serverless", async () => {
+  const { toQuery } = await import("./neon-stub");
   return {
-    query: strings.reduce(
-      (acc, part, i) => acc + part + (i < values.length ? `$${i + 1}` : ""),
-      "",
-    ),
-    params: values.map((v) =>
-      v === null || v === undefined
-        ? null
-        : typeof v === "object"
-          ? JSON.stringify(v)
-          : String(v),
-    ),
+    neon: () =>
+      (strings: TemplateStringsArray, ...values: unknown[]) => {
+        if (!holder.run) throw new Error("no database attached");
+        const { query, params } = toQuery(strings, values);
+        return holder.run(query, params);
+      },
   };
-}
-
-vi.mock("@neondatabase/serverless", () => ({
-  neon: () =>
-    (strings: TemplateStringsArray, ...values: unknown[]) => {
-      if (!holder.run) throw new Error("no database attached");
-      const { query, params } = toQuery(strings, values);
-      return holder.run(query, params);
-    },
-}));
-
-const KEY = "a-passphrase";
+});
 
 type Handler = (req: any, res: any) => Promise<void> | void;
 let entriesHandler: Handler;
@@ -75,13 +59,11 @@ function call(handler: Handler, req: Partial<{ method: string; query: any; heade
   ).then(() => sent);
 }
 
-const authed = { [`x-ledger-key`]: KEY };
-
 const putEntry = (fields: Record<string, unknown>) =>
-  call(entriesHandler, { method: "POST", headers: authed, body: fields });
+  call(entriesHandler, { method: "POST", body: fields });
 
 const putShot = (entryId: string, shot: Record<string, unknown>) =>
-  call(shotsHandler, { method: "POST", headers: authed, body: { entryId, shot } });
+  call(shotsHandler, { method: "POST", body: { entryId, shot } });
 
 const readLedger = () => call(entriesHandler, { method: "GET" });
 
@@ -90,7 +72,6 @@ beforeAll(async () => {
   holder.run = async (text, params) => (await db.query(text, params)).rows as Record<string, unknown>[];
 
   process.env.DATABASE_URL = "postgres://stub/stub";
-  process.env.LEDGER_WRITE_KEY = KEY;
 
   vi.resetModules();
   entriesHandler = (await import("../api/entries")).default as Handler;
@@ -203,9 +184,9 @@ describe("coffees", () => {
 
   it("deletes, and says so when there was nothing to delete", async () => {
     await putEntry({ id: "a", coffee: "One" });
-    expect((await call(entriesHandler, { method: "DELETE", headers: authed, query: { id: "a" } })).status).toBe(200);
+    expect((await call(entriesHandler, { method: "DELETE", query: { id: "a" } })).status).toBe(200);
     expect((await readLedger()).body.entries).toEqual([]);
-    expect((await call(entriesHandler, { method: "DELETE", headers: authed, query: { id: "a" } })).status).toBe(404);
+    expect((await call(entriesHandler, { method: "DELETE", query: { id: "a" } })).status).toBe(404);
   });
 });
 
@@ -293,47 +274,36 @@ describe("shots", () => {
     await putShot("kochere", { id: "s2" });
     expect((await db.query("select * from shots")).rows).toHaveLength(2);
 
-    await call(entriesHandler, { method: "DELETE", headers: authed, query: { id: "kochere" } });
+    await call(entriesHandler, { method: "DELETE", query: { id: "kochere" } });
     expect((await db.query("select * from shots")).rows).toHaveLength(0);
   });
 
   it("deletes one shot, and says so when there was nothing to delete", async () => {
     await putShot("kochere", { id: "s1" });
-    expect((await call(shotsHandler, { method: "DELETE", headers: authed, query: { id: "s1" } })).status).toBe(200);
+    expect((await call(shotsHandler, { method: "DELETE", query: { id: "s1" } })).status).toBe(200);
     expect((await readLedger()).body.entries[0].shots).toEqual([]);
-    expect((await call(shotsHandler, { method: "DELETE", headers: authed, query: { id: "s1" } })).status).toBe(404);
+    expect((await call(shotsHandler, { method: "DELETE", query: { id: "s1" } })).status).toBe(404);
   });
 });
 
 describe("what the routes refuse", () => {
-  it("refuses every write without the key, and allows reads", async () => {
-    expect((await call(entriesHandler, { method: "GET" })).status).toBe(200);
-    for (const [handler, req] of [
-      [entriesHandler, { method: "POST", body: { id: "a" } }],
-      [entriesHandler, { method: "DELETE", query: { id: "a" } }],
-      [shotsHandler, { method: "POST", body: { entryId: "a", shot: { id: "s" } } }],
-      [shotsHandler, { method: "DELETE", query: { id: "s" } }],
-    ] as const) {
-      expect((await call(handler, req)).status).toBe(401);
-    }
-  });
-
-  it("accepts the session cookie as well as the header", async () => {
-    const { createHash } = await import("node:crypto");
-    const token = createHash("sha256").update(KEY).digest("hex");
+  it("takes a write from anyone who can reach it — there is no key", async () => {
+    // Written down because it is a deliberate property of the deployment
+    // rather than an oversight: keeping the ledger private is a job for
+    // Vercel's Deployment Protection, not a passphrase typed into the app.
     const sent = await call(entriesHandler, {
       method: "POST",
-      headers: { cookie: `theme=dark; ledger_session=${token}` },
-      body: { id: "cookie-write", coffee: "Signed in" },
+      body: { id: "open", coffee: "No key needed" },
     });
     expect(sent.status).toBe(200);
+    expect((await readLedger()).body.entries).toHaveLength(1);
   });
 
   it("refuses an id it would have to quote", async () => {
     expect((await putEntry({ id: "has spaces" })).status).toBe(400);
     expect((await putEntry({ coffee: "no id at all" })).status).toBe(400);
     expect((await putShot("kochere", { id: "" })).status).toBe(400);
-    expect((await call(shotsHandler, { method: "POST", headers: authed, body: { shot: { id: "s" } } })).status).toBe(400);
+    expect((await call(shotsHandler, { method: "POST", body: { shot: { id: "s" } } })).status).toBe(400);
   });
 
   it("refuses a body big enough to be a problem", async () => {
@@ -343,8 +313,8 @@ describe("what the routes refuse", () => {
   });
 
   it("refuses a method it doesn't have", async () => {
-    expect((await call(entriesHandler, { method: "PUT", headers: authed })).status).toBe(405);
-    expect((await call(shotsHandler, { method: "GET", headers: authed })).status).toBe(405);
+    expect((await call(entriesHandler, { method: "PUT" })).status).toBe(405);
+    expect((await call(shotsHandler, { method: "GET" })).status).toBe(405);
   });
 
   it("treats a value that looks like SQL as a value", async () => {
@@ -388,39 +358,5 @@ describe("with nothing connected", () => {
     vi.resetModules();
     entriesHandler = (await import("../api/entries")).default as Handler;
     shotsHandler = (await import("../api/shots")).default as Handler;
-  });
-});
-
-describe("the stub is the driver", () => {
-  it("sends exactly what @neondatabase/serverless would send", async () => {
-    // The real client with only its fetch replaced, so this is the driver's own
-    // template-to-SQL conversion rather than a description of it.
-    const real = await vi.importActual<typeof import("@neondatabase/serverless")>(
-      "@neondatabase/serverless",
-    );
-    let captured: { query: string; params: unknown[] } | undefined;
-    real.neonConfig.fetchFunction = async (_url: unknown, opts: { body: string }) => {
-      captured = JSON.parse(opts.body);
-      return new Response(
-        JSON.stringify({ command: "SELECT", rowCount: 0, rows: [], fields: [] }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    };
-
-    const sql = real.neon("postgresql://u:p@ep-x.us-east-2.aws.neon.tech/db");
-    const id = "'); drop table entries; --";
-    const build = (tag: (s: TemplateStringsArray, ...v: any[]) => any) => tag`
-      insert into entries (id, coffee, starred, created_at)
-      values (${id}, ${"Café ☕️"}, ${true}, to_timestamp(${1_700_000_000_000} / 1000.0))
-      returning *
-    `;
-
-    await build(sql);
-    const mine = build((strings, ...values) => toQuery(strings, values));
-
-    expect(captured?.query).toBe(mine.query);
-    expect(captured?.params).toEqual(mine.params);
-    // The detail worth naming: every parameter crosses as text.
-    expect(mine.params).toEqual([id, "Café ☕️", "true", "1700000000000"]);
   });
 });

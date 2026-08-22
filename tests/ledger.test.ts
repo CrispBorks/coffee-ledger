@@ -182,28 +182,27 @@ describe("writing", () => {
   });
 });
 
-describe("when the ledger says no", () => {
-  it("holds a refused write, asks for the key, and saves it once signed in", async () => {
+describe("when a write does not land", () => {
+  it("holds a write the server broke on, keeping what was typed", async () => {
     const ledger = await freshLedger([{ id: "a", coffee: "" }]);
     reply = (call) =>
       call.url.startsWith("/api/entries") && call.method === "POST"
-        ? { status: 401, body: { error: "Wrong key.", needsKey: true } }
+        ? { status: 500, body: { error: "Database error: connection reset" } }
         : {};
 
     ledger.updateEntry("a", { coffee: "Kochere" });
-    await until(() => ledger.ledgerState().needsKey, "the key prompt");
+    await until(() => ledger.ledgerState().failed === 1, "the failure to be held");
 
     const held = ledger.ledgerState();
-    expect(held.failed).toBe(1);
     expect(held.unsaved).toBe(1);
+    expect(held.writeError).toMatch(/connection reset/);
     // Nothing was rolled back — what's on screen is still what was typed.
     expect(held.entries[0].coffee).toBe("Kochere");
 
     reply = () => ({});
-    expect(await ledger.signIn("hunter2")).toEqual({ ok: true });
-
+    ledger.retryFailed();
     await until(() => ledger.ledgerState().unsaved === 0, "the retried write");
-    expect(ledger.ledgerState().needsKey).toBe(false);
+    expect(ledger.ledgerState().writeError).toBe("");
     expect(posts("/api/entries").at(-1)?.body.coffee).toBe("Kochere");
   });
 
