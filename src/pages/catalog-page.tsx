@@ -12,9 +12,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { EntryCard } from "@/components/entry-card";
+import { LedgerUnreachable, LegacyImportBanner } from "@/components/ledger-status";
 import { PageShell, SiteFooter } from "@/components/page-shell";
 import { SiteHeader } from "@/components/site-header";
-import { matchesQuery, useEntries } from "@/lib/ledger";
+import { Skeleton } from "@/components/ui/skeleton";
+import { matchesQuery, useLedger } from "@/lib/ledger";
 
 type Sort = "newest" | "oldest" | "name" | "starred";
 
@@ -26,7 +28,7 @@ const SORT_LABELS: Record<Sort, string> = {
 };
 
 export function CatalogPage() {
-  const entries = useEntries();
+  const { entries, status, loadError } = useLedger();
   const [query, setQuery] = React.useState("");
   const [sort, setSort] = React.useState<Sort>("newest");
 
@@ -70,7 +72,9 @@ export function CatalogPage() {
 
       <div className="mt-5 mb-4 flex items-center justify-between gap-3">
         <p className="meta-mono min-w-0 truncate text-muted-foreground">
-          {`${results.length} ${results.length === 1 ? "coffee" : "coffees"}`}
+          {status === "loading"
+            ? "Reading the ledger…"
+            : `${results.length} ${results.length === 1 ? "coffee" : "coffees"}`}
         </p>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -104,7 +108,20 @@ export function CatalogPage() {
         </div>
       </div>
 
-      {results.length === 0 ? (
+      <LegacyImportBanner />
+
+      {/* Three states the file-backed ledger never had: still reading, and
+          couldn't read. An empty grid must not stand in for either — "you have
+          no coffees" is the one thing an unanswered read doesn't tell us. */}
+      {status === "loading" ? (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-[132px]" />
+          ))}
+        </div>
+      ) : status === "unreachable" ? (
+        <LedgerUnreachable error={loadError} />
+      ) : results.length === 0 ? (
         <p className="rounded-md border border-dashed border-border p-8 text-center text-[15px] text-muted-foreground">
           {entries.length === 0
             ? "No coffees logged yet. Add your first one to start tracking."

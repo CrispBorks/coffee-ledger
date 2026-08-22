@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { ArrowLeftIcon } from "lucide-react";
 
+import { LedgerStatus } from "@/components/ledger-status";
 import { cn } from "@/lib/utils";
 
 export function PageShell({
@@ -22,6 +23,9 @@ export function PageShell({
       )}
     >
       {children}
+      {/* Saving happens on its own now, so the only place it surfaces is a
+          corner that stays quiet until something hasn't landed. */}
+      <LedgerStatus />
     </div>
   );
 }

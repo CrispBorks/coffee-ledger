@@ -19,6 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { LedgerUnreachable } from "@/components/ledger-status";
 import { BackLink, PageShell, SiteFooter } from "@/components/page-shell";
 import {
   addShot,
@@ -27,6 +28,7 @@ import {
   updateEntry,
   updateShot,
   useEntry,
+  useLedger,
   type Entry,
   type Shot,
 } from "@/lib/ledger";
@@ -35,6 +37,7 @@ import { cn } from "@/lib/utils";
 export function EntryPage() {
   const { id } = useParams<{ id: string }>();
   const entry = useEntry(id);
+  const { status, loadError } = useLedger();
   const navigate = useNavigate();
 
   React.useEffect(() => {
@@ -43,18 +46,27 @@ export function EntryPage() {
 
   if (!id) return null;
 
+  // A deep link opens before the read comes back, so "not in the ledger" has
+  // to wait until we've actually looked — otherwise every shared URL flashes a
+  // 404 on the way in.
+  if (!entry && status === "loading") return <EntrySkeleton />;
+
   if (!entry) {
     return (
       <PageShell width="reading">
         <div className="no-print pt-9 pb-5">
           <BackLink />
         </div>
-        <p className="rounded-md border border-dashed border-border p-8 text-center text-[15px] text-muted-foreground">
-          That coffee isn't in the ledger.{" "}
-          <Link to="/" className="underline underline-offset-2">
-            Back to the ledger.
-          </Link>
-        </p>
+        {status === "unreachable" ? (
+          <LedgerUnreachable error={loadError} />
+        ) : (
+          <p className="rounded-md border border-dashed border-border p-8 text-center text-[15px] text-muted-foreground">
+            That coffee isn't in the ledger.{" "}
+            <Link to="/" className="underline underline-offset-2">
+              Back to the ledger.
+            </Link>
+          </p>
+        )}
         <SiteFooter />
       </PageShell>
     );

@@ -1,0 +1,159 @@
+/** The shapes the ledger stores, and the tidying both ends agree on.
+ *
+ *  Shared by the browser app and the serverless functions, so it holds nothing
+ *  either one can't load: no React, no DOM, no database client. The store in
+ *  ledger.ts re-exports all of it, so the pages carry on importing from there.
+ */
+
+/** One pull. Every measurement is a string because that is what the shot log
+ *  actually collects — a field left blank, "18", "18.2" and "~18" are all
+ *  things you type at 7am, and round-tripping them through a number turns the
+ *  blanks into zeroes and the rest into a lie about how precisely it was
+ *  weighed. Aggregating them is a job for a view over the table, later. */
+export type Shot = {
+  id: string;
+  starred: boolean;
+  grind: string;
+  dose: string;
+  yield: string;
+  timeMin: string;
+  timeSec: string;
+  rpm: string;
+  temp: string;
+  infusion: string;
+  ps: boolean;
+  extraction: number; // 0–100, under-extracted → over-extracted
+  notes: string;
+};
+
+export type Entry = {
+  id: string;
+  createdAt: number;
+  // Coffee
+  coffee: string;
+  roaster: string;
+  origins: string;
+  altitude: string;
+  tastingNotes: string;
+  // Roast
+  roastLevel: string;
+  roastDate: string;
+  process: string;
+  variety: string;
+  comments: string;
+  // Gear
+  machine: string;
+  grinder: string;
+  basket: string;
+  other: string;
+  // Shots
+  shots: Shot[];
+};
+
+/** The editable text of an entry, in one list, so the empty entry, the
+ *  validator and the row mapper can't drift apart as fields are added. */
+export const ENTRY_TEXT_FIELDS = [
+  "coffee",
+  "roaster",
+  "origins",
+  "altitude",
+  "tastingNotes",
+  "roastLevel",
+  "roastDate",
+  "process",
+  "variety",
+  "comments",
+  "machine",
+  "grinder",
+  "basket",
+  "other",
+] as const;
+
+export type EntryTextField = (typeof ENTRY_TEXT_FIELDS)[number];
+
+/** What an entry looks like before anything is typed into it. */
+export const EMPTY_ENTRY = Object.fromEntries(
+  ENTRY_TEXT_FIELDS.map((field) => [field, ""]),
+) as Record<EntryTextField, string>;
+
+export const SHOT_TEXT_FIELDS = [
+  "grind",
+  "dose",
+  "yield",
+  "timeMin",
+  "timeSec",
+  "rpm",
+  "temp",
+  "infusion",
+  "notes",
+] as const;
+
+export type ShotTextField = (typeof SHOT_TEXT_FIELDS)[number];
+
+export const EMPTY_SHOT: Omit<Shot, "id"> = {
+  ...(Object.fromEntries(SHOT_TEXT_FIELDS.map((f) => [f, ""])) as Record<
+    ShotTextField,
+    string
+  >),
+  starred: false,
+  ps: false,
+  extraction: 50,
+};
+
+/** Ids are made in the browser so a new coffee has a URL before the write to
+ *  the database has come back. That means the server has to treat them as
+ *  untrusted input: this is the shape it will accept. */
+export const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function makeId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const text = (value: unknown) => (typeof value === "string" ? value : "");
+const flag = (value: unknown) => value === true;
+
+/** Clamped rather than rejected: the slider can only produce 0–100, so a value
+ *  outside it means something else wrote the row, and the nearest end of the
+ *  scale is a better answer than refusing to show the shot at all. */
+const extraction = (value: unknown) => {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return 50;
+  return Math.min(100, Math.max(0, Math.round(n)));
+};
+
+/** Coerce anything shaped roughly like a shot into a whole one. Used on both
+ *  sides: the server won't store a half-filled row, and the client won't hand
+ *  a page an object with fields missing. */
+export function toShot(value: unknown): Shot | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.id !== "string" || !ID_PATTERN.test(raw.id)) return null;
+
+  const shot = { id: raw.id } as Shot;
+  for (const field of SHOT_TEXT_FIELDS) shot[field] = text(raw[field]);
+  shot.starred = flag(raw.starred);
+  shot.ps = flag(raw.ps);
+  shot.extraction = extraction(raw.extraction);
+  return shot;
+}
+
+export function toEntry(value: unknown): Entry | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.id !== "string" || !ID_PATTERN.test(raw.id)) return null;
+
+  const entry = { id: raw.id } as Entry;
+  for (const field of ENTRY_TEXT_FIELDS) entry[field] = text(raw[field]);
+  entry.createdAt =
+    typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt)
+      ? raw.createdAt
+      : Date.now();
+  entry.shots = Array.isArray(raw.shots)
+    ? raw.shots.map(toShot).filter((s): s is Shot => s !== null)
+    : [];
+  return entry;
+}
+
+/** A backstop against a single request filling the table. The form has no way
+ *  to produce anything close to this; a script pointed at the API does. */
+export const MAX_ENTRY_BYTES = 200_000;

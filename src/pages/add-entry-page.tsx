@@ -6,12 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BackLink, PageShell, SiteFooter } from "@/components/page-shell";
-import { addEntry, EMPTY_ENTRY, type Entry } from "@/lib/ledger";
+import { addEntry, EMPTY_ENTRY, useLedger, type Entry } from "@/lib/ledger";
 
 type FormValues = Omit<Entry, "id" | "createdAt" | "shots">;
 
 export function AddEntryPage() {
   const navigate = useNavigate();
+  const { status, needsSetup } = useLedger();
   const [values, setValues] = React.useState<FormValues>({ ...EMPTY_ENTRY });
 
   React.useEffect(() => {
@@ -38,6 +39,16 @@ export function AddEntryPage() {
       <p className="mt-3 max-w-[60ch] text-[14px] text-muted-foreground">
         Log what's in the bag now — you'll add shots once you start dialing it in.
       </p>
+
+      {/* Worth saying before the form rather than after it: filling this in and
+          then being told it can't be stored is the wrong order. */}
+      {(needsSetup || status === "unreachable") && (
+        <p className="mt-5 rounded-md border border-dashed border-destructive/50 p-4 text-[13px] text-muted-foreground">
+          {needsSetup
+            ? "This deployment has no database connected yet, so a coffee added here won't be stored. See the README for the two settings it needs."
+            : "The ledger can't be reached right now. A coffee added here is kept on this screen and saved as soon as the connection is back — but don't close the tab until it has."}
+        </p>
+      )}
 
       <form onSubmit={onSubmit} className="mt-8 flex flex-col gap-8">
         <Section title="Coffee">
