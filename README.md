@@ -83,10 +83,11 @@ open to whoever can reach the URL. Reads were always public; now writes are too.
 
 Keeping the ledger private is a deployment setting rather than something the app
 asks you for. Vercel's **Deployment Protection** (Project → Settings →
-Deployment Protection) puts either a password or your Vercel login in front of
-the whole site, functions included. It's one switch, it's free on a personal
-project, and unlike a key in the app there's nothing to re-enter on a new
-phone.
+Deployment Protection) puts your Vercel login, or a password, in front of the
+whole site — functions included. It's a toggle, and unlike a key in the app
+there's nothing for the app to store and nothing to re-enter on a new phone.
+Check which methods your plan includes; the login one is the widely available
+default, password protection has been a paid feature.
 
 ### The routes
 
