@@ -41,7 +41,7 @@ export type Res = {
  *  dialog offers a custom prefix, and a project carried over from the old
  *  Vercel Postgres has POSTGRES_URL. Rather than depend on one spelling, take
  *  the first that looks like a Postgres connection string. */
-const CONNECTION_VARS = [
+export const CONNECTION_VARS = [
   "DATABASE_URL",
   "POSTGRES_URL",
   "STORAGE_URL",
@@ -52,13 +52,16 @@ const CONNECTION_VARS = [
 const isPostgresUrl = (value: string | undefined) =>
   typeof value === "string" && /^postgres(ql)?:\/\//i.test(value);
 
-function findConnectionString(): string {
+/** Takes the environment rather than reading it, so the lookup that the
+ *  one-click setup depends on can be tested as the pure thing it is. */
+export function findConnectionString(env: NodeJS.ProcessEnv = process.env): string {
   for (const name of CONNECTION_VARS) {
-    if (isPostgresUrl(process.env[name])) return process.env[name] as string;
+    if (isPostgresUrl(env[name])) return env[name] as string;
   }
   // A custom prefix produces something like MYPREFIX_URL, so fall back to any
-  // variable at all whose value is a Postgres URL.
-  for (const [name, value] of Object.entries(process.env)) {
+  // variable at all whose value is a Postgres URL. The value is what decides,
+  // not the name — VERCEL_URL ends in _URL too and is not a database.
+  for (const [name, value] of Object.entries(env)) {
     if (name.endsWith("_URL") && isPostgresUrl(value)) return value as string;
   }
   return "";

@@ -40,6 +40,10 @@ vi.mock("@neondatabase/serverless", async () => {
 type Handler = (req: any, res: any) => Promise<void> | void;
 let entriesHandler: Handler;
 let shotsHandler: Handler;
+/** Taken off the module the handlers come from rather than imported at the top
+ *  of this file: a static import would evaluate api/entries before beforeAll
+ *  sets DATABASE_URL, and every handler test would then find no database. */
+let findConnectionString: (env: NodeJS.ProcessEnv) => string;
 let db: PGlite;
 
 function call(handler: Handler, req: Partial<{ method: string; query: any; headers: any; body: any }>) {
@@ -74,7 +78,9 @@ beforeAll(async () => {
   process.env.DATABASE_URL = "postgres://stub/stub";
 
   vi.resetModules();
-  entriesHandler = (await import("../api/entries")).default as Handler;
+  const entriesModule = await import("../api/entries");
+  entriesHandler = entriesModule.default as Handler;
+  findConnectionString = entriesModule.findConnectionString;
   shotsHandler = (await import("../api/shots")).default as Handler;
 });
 
@@ -335,6 +341,63 @@ describe("what the routes refuse", () => {
     const entry = (await readLedger()).body.entries[0];
     expect(entry.coffee).toBe("Café Náriño ☕️");
     expect(entry.tastingNotes).toBe("🫐 jasmine");
+  });
+});
+
+/** Connecting Neon in the Vercel dashboard is the whole of the setup, so what
+ *  it hands you has to be found without being told where to look. The
+ *  integration writes DATABASE_URL by default, but the connect dialog offers a
+ *  custom prefix, and a project carried over from the old Vercel Postgres has
+ *  POSTGRES_URL instead.
+ *
+ *  Tested as a pure function against an explicit environment. Reloading the
+ *  module with a doctored process.env looks more end-to-end and isn't:
+ *  the connection string is resolved once at import, and vi.resetModules does
+ *  not reliably re-evaluate a module that has been mocked — the negative case
+ *  passed by keeping the previous test's value. */
+describe("finding the database it was given", () => {
+  it.each([
+    ["DATABASE_URL", "what the Vercel Neon integration sets by default"],
+    ["POSTGRES_URL", "a project carried over from Vercel Postgres"],
+    ["STORAGE_URL", "the storage-prefixed spelling"],
+    ["DATABASE_URL_UNPOOLED", "Neon's direct connection"],
+    ["COFFEE_LEDGER_URL", "a custom prefix chosen in the connect dialog"],
+    ["SOMETHING_NOBODY_PREDICTED_URL", "a prefix nobody could have predicted"],
+  ])("finds the URL when it arrives as %s (%s)", (name) => {
+    expect(findConnectionString({ [name]: "postgres://u:p@host/db" })).toBe(
+      "postgres://u:p@host/db",
+    );
+  });
+
+  it("accepts the postgresql:// spelling", () => {
+    expect(findConnectionString({ DATABASE_URL: "postgresql://u:p@host/db" })).toBe(
+      "postgresql://u:p@host/db",
+    );
+  });
+
+  it("prefers the documented names over a stray match", () => {
+    expect(
+      findConnectionString({
+        AAA_URL: "postgres://stray/db",
+        DATABASE_URL: "postgres://real/db",
+      }),
+    ).toBe("postgres://real/db");
+  });
+
+  it("ignores a variable that ends in _URL but isn't a database", () => {
+    // VERCEL_URL is set on every deployment; taking it would turn "no database
+    // connected" into a confusing connection failure.
+    expect(
+      findConnectionString({
+        VERCEL_URL: "https://coffee-ledger.vercel.app",
+        NEXT_PUBLIC_SITE_URL: "https://example.com",
+        REDIS_URL: "redis://localhost:6379",
+      }),
+    ).toBe("");
+  });
+
+  it("finds nothing in an empty environment", () => {
+    expect(findConnectionString({})).toBe("");
   });
 });
 
