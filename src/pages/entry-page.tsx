@@ -30,6 +30,7 @@ import {
   useEntry,
   useLedger,
   type Entry,
+  type GearField,
   type Shot,
 } from "@/lib/ledger";
 import { cn } from "@/lib/utils";
@@ -155,11 +156,36 @@ export function EntryPage() {
           <LabeledTextarea label="Comments" value={entry.comments} onChange={set("comments")} placeholder="—" />
         </div>
 
+        {/* Read-only: this is the gear the coffee was added with, copied from
+            the profile at the time. Editing it here would make it a second
+            place to keep gear; changing it on the profile would rewrite
+            history. Grind settings only mean anything against the grinder
+            they were dialled on, so the record stays as it was. */}
         <div className="flex flex-col gap-4">
-          <LabeledInput label="Machine" value={entry.machine} onChange={set("machine")} placeholder="—" />
-          <LabeledInput label="Grinder" value={entry.grinder} onChange={set("grinder")} placeholder="—" />
-          <LabeledInput label="Basket" value={entry.basket} onChange={set("basket")} placeholder="—" />
-          <LabeledInput label="Other" value={entry.other} onChange={set("other")} placeholder="—" />
+          {GEAR_ROWS.map(({ field, label }) => (
+            <div key={field} className="flex flex-col gap-1">
+              {/* The same classes <Label> gives the editable fields' labels, so
+                  read-only rows don't look like a different kind of thing. */}
+              <span className="flex items-center text-sm leading-none font-medium label-mono text-muted-foreground">
+                {label}
+              </span>
+              <span
+                className={cn(
+                  "border-b border-dotted border-border pb-1 text-[14px] break-words",
+                  !entry[field].trim() && "text-muted-foreground/50",
+                )}
+              >
+                {entry[field].trim() || "—"}
+              </span>
+            </div>
+          ))}
+          <p className="text-[12px] leading-relaxed text-muted-foreground">
+            The gear this coffee was added with.{" "}
+            <Link to="/profile" className="underline underline-offset-2 hover:text-foreground">
+              Your gear
+            </Link>{" "}
+            is set on your profile.
+          </p>
         </div>
       </section>
 
@@ -324,6 +350,13 @@ function ShotRow({ entryId, shot }: { entryId: string; shot: Shot }) {
     </tr>
   );
 }
+
+const GEAR_ROWS: { field: GearField; label: string }[] = [
+  { field: "machine", label: "Machine" },
+  { field: "grinder", label: "Grinder" },
+  { field: "basket", label: "Basket" },
+  { field: "other", label: "Other" },
+];
 
 function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
   return <th className={cn("py-2 pr-2 text-left font-normal", className)}>{children}</th>;

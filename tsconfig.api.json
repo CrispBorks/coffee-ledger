@@ -18,5 +18,5 @@
   // The serverless functions and the one module they share with the app. No
   // DOM lib on purpose: it's what stops a browser-only API drifting into code
   // that runs in Node.
-  "include": ["api", "src/lib/ledger-types.ts"]
+  "include": ["api", "src/lib/ledger-types.ts", "src/lib/tokens.ts"]
 }

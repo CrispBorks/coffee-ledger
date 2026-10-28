@@ -65,7 +65,7 @@ export function TokenGate() {
             <section>
               <h1 className="display text-[22px] font-semibold">Open your ledger</h1>
               <p className="mt-2 text-[14px] text-muted-foreground">
-                Every ledger is private to its token. Paste yours to open it.
+                Every ledger is private to its token. Enter yours to open it.
               </p>
 
               <form
@@ -82,7 +82,7 @@ export function TokenGate() {
                   id="token"
                   value={token}
                   onChange={(event) => setTokenText(event.target.value)}
-                  placeholder="cl_…"
+                  placeholder="Your token"
                   autoComplete="off"
                   autoCapitalize="off"
                   autoCorrect="off"

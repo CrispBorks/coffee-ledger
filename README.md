@@ -13,9 +13,16 @@ follows you between the phone and the laptop, and clearing site data no longer
 clears it.
 
 Each ledger belongs to a **token**. The first time you open the site it asks for
-one: paste a token you already have, or start a new ledger and the app generates
-one and shows it to you once. Keep it somewhere safe — it's the only key. Past
-that screen, open it, add a coffee, it's saved.
+one: enter a token you already have, or start a new ledger and the app generates
+one and shows it to you once. Generated tokens are long and random, so the
+**profile page lets you swap yours for one you'll remember** — "blue moon
+espresso" — and that's what you type on every other device. Past that screen,
+open it, add a coffee, it's saved.
+
+Each token also has a **profile**: a name, and your gear — machine, grinder,
+basket, other. Gear is set once there instead of on every coffee; each coffee
+you add is recorded with the gear you had at the time, so a new grinder later
+doesn't change what older grind settings meant.
 
 There is no Save button, and there wasn't one before either — the shot log is
 edited in place, a cell at a time, and that hasn't changed. What happens under
@@ -80,8 +87,21 @@ up rather than pretending an edit was stored.
 
 ### Tokens
 
-A token is `cl_` followed by 43 random characters (256 bits). It is the whole
-account model: no email, no password.
+A token is the whole account model: no email, no password. There are two kinds,
+and the rules for both live in `src/lib/tokens.ts`, shared by the app and the
+server so they can't disagree:
+
+- **Issued** — `cl_` followed by 43 random characters (256 bits), from "Start a
+  new ledger". Matched exactly.
+- **Chosen** — what you swap it for on the profile page: 6–64 characters of
+  letters, numbers, spaces, dashes, dots and underscores. Not case-sensitive,
+  and spaces are tidied, so a phone capitalising the first letter doesn't
+  matter. ASCII only, because a token travels in an HTTP header.
+
+A chosen token is exactly as private as it is hard to guess — anyone who types
+it opens that ledger. It's stored as a SHA-256 like an issued one, but that's a
+fast hash, so a stolen copy of the database could be tested against guesses
+quickly. That's the trade for not writing it down.
 
 - **Making one.** `POST /api/session` creates a user and returns the token. That
   response is the only time it exists in readable form — the database stores its
@@ -94,6 +114,11 @@ account model: no email, no password.
 - **Isolation.** Every query is scoped to the user the token resolves to. Another
   user's coffees and shots are not returned, cannot be deleted, and cannot be
   overwritten by reusing an id.
+- **Changing one.** `PUT /api/session` with `{ token }` swaps it for a chosen
+  one. It needs the current token, so only whoever is already in a ledger can
+  do it. The old token stops working immediately; the device that changed it
+  switches over without signing in again, and every other device needs the new
+  one. A token someone else already has is refused.
 - **Locking a device.** The lock button in the header makes the browser forget
   its token. It doesn't revoke it; it still works anywhere it's been kept.
 
@@ -123,6 +148,9 @@ Everything except `POST /api/session` needs `Authorization: Bearer <token>` and 
 | --- | --- |
 | `POST /api/session` | make a new ledger, return its token (once) |
 | `GET /api/session` | 200 if the token in the header is valid, else 401 |
+| `PUT /api/session` | change your token to one you chose: `{ token }` |
+| `GET /api/profile` | your name and gear |
+| `POST /api/profile` | replace them; fields left out are stored blank |
 | `GET /api/entries` | every coffee, newest first, each with its shot log |
 | `POST /api/entries` | add or replace one coffee, by id |
 | `DELETE /api/entries?id=` | remove a coffee and every shot logged against it |
