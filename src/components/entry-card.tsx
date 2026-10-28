@@ -1,13 +1,23 @@
 import { Link } from "react-router-dom";
 import { StarIcon } from "lucide-react";
 
+import { RestBadge } from "@/components/coffee-card";
 import { Badge } from "@/components/ui/badge";
+import { bagOf, bagText, finishedText, restPhaseOf } from "@/lib/bags";
 import { bestShots, type Entry } from "@/lib/ledger";
+import { recipeOf } from "@/lib/shots";
+import { cn } from "@/lib/utils";
 
+/** One bag in the ledger. In use, it answers "how much is left, and is it
+ *  ready?"; finished, it's the record — how it went and what worked. */
 export function EntryCard({ entry }: { entry: Entry }) {
   const meta = [entry.roaster, entry.roastDate].filter(Boolean);
   const tags = [entry.roastLevel, entry.process, entry.origins].filter(Boolean);
   const starred = bestShots(entry).length;
+  const finished = entry.finishedAt !== null;
+  const phase = finished ? null : restPhaseOf(entry);
+  const bag = finished ? null : bagOf(entry);
+  const recipe = [...entry.shots].reverse().find((s) => s.starred);
 
   return (
     <Link
@@ -44,9 +54,31 @@ export function EntryCard({ entry }: { entry: Entry }) {
         <p className="meta-mono text-muted-foreground">{meta.join(" · ")}</p>
       )}
 
-      <p className="meta-mono text-muted-foreground">
-        {entry.shots.length} shot{entry.shots.length === 1 ? "" : "s"} logged
-      </p>
+      {phase && <RestBadge phase={phase} />}
+
+      {finished ? (
+        <>
+          <p className="meta-mono text-muted-foreground">{finishedText(entry)}</p>
+          {recipe && recipeOf(recipe) && (
+            <p className="flex items-start gap-1.5 font-mono text-[12px]">
+              <StarIcon className="mt-0.5 size-3 shrink-0 fill-status text-status" />
+              <span className="min-w-0 break-words">{recipeOf(recipe)}</span>
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="meta-mono text-muted-foreground">
+          {entry.shots.length} shot{entry.shots.length === 1 ? "" : "s"} logged
+          {bag && (
+            <span className={cn((bag.low || bag.empty) && "text-foreground")}>
+              {" · "}
+              {/* Short on a small card: the coffee's page has the full story. */}
+              {bag.empty ? `${Math.round(bag.left)}g left · done?` : bagText(bag)}
+              {!bag.empty && bag.low && " · running low"}
+            </span>
+          )}
+        </p>
+      )}
     </Link>
   );
 }

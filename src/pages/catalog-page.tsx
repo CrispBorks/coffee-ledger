@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ArrowUpDownIcon, SearchIcon, XIcon } from "lucide-react";
+import { ArrowUpDownIcon, ChevronDownIcon, SearchIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,7 @@ import { PageShell, SiteFooter } from "@/components/page-shell";
 import { SiteHeader } from "@/components/site-header";
 import { Skeleton } from "@/components/ui/skeleton";
 import { matchesQuery, useLedger } from "@/lib/ledger";
+import { cn } from "@/lib/utils";
 
 type Sort = "newest" | "oldest" | "name" | "starred";
 
@@ -31,6 +32,7 @@ export function CatalogPage() {
   const { entries, status, loadError } = useLedger();
   const [query, setQuery] = React.useState("");
   const [sort, setSort] = React.useState<Sort>("newest");
+  const [showFinished, setShowFinished] = React.useState(false);
 
   React.useEffect(() => {
     document.title = "Coffee Ledger";
@@ -53,6 +55,12 @@ export function CatalogPage() {
   }, [entries, query, sort]);
 
   const filtersActive = query.trim() !== "";
+  // Bags in use first; finished ones keep their record below, folded away.
+  const current = results.filter((e) => e.finishedAt === null);
+  const finished = results.filter((e) => e.finishedAt !== null);
+  // A search that only matches finished bags opens them, rather than looking
+  // like it found nothing.
+  const finishedOpen = showFinished || (filtersActive && current.length === 0 && finished.length > 0);
 
   return (
     <PageShell>
@@ -74,7 +82,9 @@ export function CatalogPage() {
         <p className="meta-mono min-w-0 truncate text-muted-foreground">
           {status === "loading"
             ? "Reading the ledger…"
-            : `${results.length} ${results.length === 1 ? "coffee" : "coffees"}`}
+            : finished.length > 0
+              ? `${current.length} in use · ${finished.length} finished`
+              : `${results.length} ${results.length === 1 ? "coffee" : "coffees"}`}
         </p>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -128,11 +138,44 @@ export function CatalogPage() {
             : "Nothing in the ledger matches that search."}
         </p>
       ) : (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
-          {results.map((entry) => (
-            <EntryCard key={entry.id} entry={entry} />
-          ))}
-        </div>
+        <>
+          {current.length > 0 ? (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+              {current.map((entry) => (
+                <EntryCard key={entry.id} entry={entry} />
+              ))}
+            </div>
+          ) : (
+            !filtersActive && (
+              <p className="rounded-md border border-dashed border-border p-8 text-center text-[15px] text-muted-foreground">
+                Every bag is finished. Add a new coffee, or reopen one below.
+              </p>
+            )
+          )}
+
+          {finished.length > 0 && (
+            <section aria-label="Finished bags" className="mt-10">
+              <button
+                type="button"
+                aria-expanded={finishedOpen}
+                onClick={() => setShowFinished(!finishedOpen)}
+                className="label-mono flex w-full items-center justify-between gap-3 border-b border-border pb-2 text-muted-foreground hover:text-foreground"
+              >
+                Finished · {finished.length}
+                <ChevronDownIcon
+                  className={cn("size-4 transition-transform", finishedOpen && "rotate-180")}
+                />
+              </button>
+              {finishedOpen && (
+                <div className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+                  {finished.map((entry) => (
+                    <EntryCard key={entry.id} entry={entry} />
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+        </>
       )}
 
       <SiteFooter />

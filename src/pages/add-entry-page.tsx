@@ -7,23 +7,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Field, Section } from "@/components/form-section";
 import { GearSummary } from "@/components/gear-summary";
 import { BackLink, PageShell, SiteFooter } from "@/components/page-shell";
-import {
-  addEntry,
-  EMPTY_ENTRY,
-  GEAR_FIELDS,
-  useLedger,
-  type Entry,
-  type GearField,
-} from "@/lib/ledger";
+import { BagFields } from "@/components/bag-fields";
+import { addEntry, EMPTY_ENTRY, GEAR_FIELDS, useLedger, type NewCoffee } from "@/lib/ledger";
 
-/** The bag, not the kit: gear comes from the profile and is filled in by
- *  addEntry, so it isn't part of what this form collects. */
-type FormValues = Omit<Entry, "id" | "createdAt" | "shots" | GearField>;
+type FormValues = NewCoffee;
+
+/** Gear comes from the profile and a weigh-in only happens later, so neither
+ *  is part of what this form starts with. */
+const NOT_ASKED: readonly string[] = [...GEAR_FIELDS, "weighedGrams"];
 
 const BLANK = Object.fromEntries(
-  Object.entries(EMPTY_ENTRY).filter(
-    ([field]) => !(GEAR_FIELDS as readonly string[]).includes(field),
-  ),
+  Object.entries(EMPTY_ENTRY).filter(([field]) => !NOT_ASKED.includes(field)),
 ) as FormValues;
 
 export function AddEntryPage() {
@@ -181,6 +175,13 @@ export function AddEntryPage() {
               />
             )}
           </Field>
+        </Section>
+
+        <Section title="Bag">
+          <BagFields
+            values={values}
+            onChange={(patch) => setValues((prev) => ({ ...prev, ...patch }))}
+          />
         </Section>
 
         {/* Gear used to be four more fields here, retyped for every bag. It

@@ -105,7 +105,6 @@ const COMPARED: { label: string; read: (shot: Shot) => string }[] = [
     },
   },
   { label: "pre-infusion", read: (s) => (s.infusion.trim() ? `${s.infusion.trim()}s` : "") },
-  { label: "pre-soak", read: (s) => (s.ps ? "on" : "") },
   { label: "temp", read: (s) => (s.temp.trim() ? `${s.temp.trim()}°` : "") },
   { label: "rpm", read: (s) => s.rpm.trim() },
 ];
@@ -118,9 +117,7 @@ export function changesFrom(previous: Shot, shot: Shot): Change[] {
     const from = read(previous);
     const to = read(shot);
     if (from === to) continue;
-    // Pre-soak is a switch: "off" reads better than a dash.
-    const blank = label === "pre-soak" ? "off" : "—";
-    changes.push({ label, from: from || blank, to: to || blank });
+    changes.push({ label, from: from || "—", to: to || "—" });
   }
   return changes;
 }

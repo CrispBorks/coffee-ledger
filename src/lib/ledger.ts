@@ -33,6 +33,7 @@ import {
   makeId,
   toEntry,
   toProfile,
+  toShot,
   type Entry,
   type GearField,
   type Profile,
@@ -72,6 +73,9 @@ export type LedgerState = {
   writeError: string;
   /** The deployment has no database connected, so nothing can be stored. */
   needsSetup: boolean;
+  /** The server can't be reached, and what's on screen is this device's saved
+   *  copy. Changes still queue, and go when the connection is back. */
+  offline: boolean;
   /** Coffees found in this browser's localStorage from before the database. */
   legacy: number;
 };
@@ -86,6 +90,7 @@ let state: LedgerState = {
   failed: 0,
   writeError: "",
   needsSetup: false,
+  offline: false,
   legacy: 0,
 };
 
@@ -94,6 +99,7 @@ const listeners = new Set<() => void>();
 function patch(next: Partial<LedgerState>) {
   state = { ...state, ...next, ...counts() };
   listeners.forEach((fn) => fn());
+  saveOutbox();
 }
 
 function subscribe(fn: () => void) {
@@ -132,6 +138,12 @@ const NOT_RUNNING =
 /** The server doesn't know this token — it was never issued, or the account is
  *  gone. Back to the gate; the ledger on screen belongs to nobody now. */
 function lock(why: string) {
+  // The copy belongs to a token that no longer opens anything.
+  try {
+    localStorage.removeItem(SNAPSHOT_KEY);
+  } catch {
+    /* nothing to do */
+  }
   patch({ status: "locked", loadError: why, entries: [] });
 }
 
@@ -154,6 +166,11 @@ const timers = new Map<string, { timer: ReturnType<typeof setTimeout>; run: () =
 /** Sent, refused, and kept for a retry. */
 const failed = new Map<string, Job>();
 let running = false;
+
+/** Rows whose writes landed while a read was out. The read may have been
+ *  answered from before them, so its copy of those rows is stale: they're laid
+ *  over its answer like anything still pending. Null when no read is out. */
+let landedDuringRead: Set<string> | null = null;
 
 /** Set while this device's token is being changed. Nothing new is sent until
  *  the new token is in place: a write that left under the old token after the
@@ -245,6 +262,7 @@ async function drain(): Promise<void> {
   if (queue[0] === job) queue.shift();
 
   if (result === "done") {
+    landedDuringRead?.add(job.key);
     // The last thing that could still be wrong has gone right.
     patch(failed.size === 0 ? { writeError: "" } : {});
   } else if ("drop" in result) {
@@ -287,11 +305,12 @@ async function send(
         : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
     });
   } catch {
+    if (!state.offline) patch({ offline: true });
     return { retry: "Offline — your changes are safe here and will save when the connection is back." };
   }
 
   if (res.ok) {
-    if (state.needsSetup) patch({ needsSetup: false });
+    if (state.needsSetup || state.offline) patch({ needsSetup: false, offline: false });
     return "done";
   }
   if (res.status === 404 && goneIsFine) return "done";
@@ -342,6 +361,223 @@ function writeShot(entryId: string, shotId: string): () => Promise<Result> {
   };
 }
 
+/* ----------------------------------------------------------------- outbox */
+
+/** Changes that haven't reached the server, kept in localStorage so they
+ *  survive the app being closed — on a home-screen app at the machine, on bad
+ *  Wi-Fi, that's the moment it happens. The queue holds closures that re-read
+ *  state, so what's saved is the state they'd send: a row for a write, an id
+ *  for a delete (a pending row key whose row is gone was deleted). */
+const OUTBOX_KEY = "coffeeLedger.outbox.v1";
+
+type OutboxOp =
+  | { kind: "entry"; entry: Entry }
+  | { kind: "deleteEntry"; id: string }
+  | { kind: "shot"; entryId: string; shot: Shot }
+  | { kind: "deleteShot"; id: string }
+  | { kind: "profile"; profile: Profile };
+
+/** Whose changes these are: an outbox never crosses to another ledger. */
+type Outbox = { token: string; ops: OutboxOp[] };
+
+let outboxSaved = false;
+let outboxRestored = false;
+
+function opFor(key: string): OutboxOp | null {
+  if (key === "profile") return { kind: "profile", profile: state.profile };
+  if (key.startsWith("entry:")) {
+    const id = key.slice("entry:".length);
+    const entry = state.entries.find((e) => e.id === id);
+    return entry ? { kind: "entry", entry: { ...entry, shots: [] } } : { kind: "deleteEntry", id };
+  }
+  if (key.startsWith("shot:")) {
+    const id = key.slice("shot:".length);
+    for (const entry of state.entries) {
+      const shot = entry.shots.find((s) => s.id === id);
+      if (shot) return { kind: "shot", entryId: entry.id, shot };
+    }
+    return { kind: "deleteShot", id };
+  }
+  return null;
+}
+
+/** Every row with a change on its way: queued, settling, or held. */
+function pendingKeys(): string[] {
+  return [...new Set([...queue.map((j) => j.key), ...timers.keys(), ...failed.keys()])];
+}
+
+function saveOutbox() {
+  // Before the first read the queue can't hold anything worth keeping, and
+  // saving now would overwrite the outbox about to be restored.
+  if (!outboxRestored) return;
+  const keys = pendingKeys();
+  try {
+    if (keys.length === 0) {
+      if (outboxSaved) {
+        localStorage.removeItem(OUTBOX_KEY);
+        // Everything has landed: this is now the server's state too.
+        saveSnapshot();
+      }
+      outboxSaved = false;
+      return;
+    }
+    const ops = keys.map(opFor).filter((op): op is OutboxOp => op !== null);
+    const outbox: Outbox = { token: getToken(), ops };
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify(outbox));
+    outboxSaved = true;
+  } catch {
+    /* private mode or full: the in-memory queue still works this session */
+  }
+}
+
+function readOutbox(): Outbox | null {
+  try {
+    const raw = localStorage.getItem(OUTBOX_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Outbox;
+    return Array.isArray(parsed?.ops) && typeof parsed.token === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Lay changes over a copy of the ledger: rows replaced or added, deletes
+ *  removed. Coffees first, so shots logged against a coffee added offline
+ *  have somewhere to go. Used on the server's data after a read, and on the
+ *  device's copy at start-up. */
+function applyOps(
+  entries: Entry[],
+  profile: Profile,
+  ops: OutboxOp[],
+): { entries: Entry[]; profile: Profile } {
+  for (const op of ops) {
+    if (op.kind === "entry") {
+      const incoming = toEntry(op.entry);
+      if (!incoming) continue;
+      const existing = entries.find((e) => e.id === incoming.id);
+      entries = existing
+        ? entries.map((e) => (e.id === incoming.id ? { ...incoming, shots: e.shots } : e))
+        : [incoming, ...entries];
+    } else if (op.kind === "deleteEntry") {
+      entries = entries.filter((e) => e.id !== op.id);
+    } else if (op.kind === "profile") {
+      profile = toProfile(op.profile);
+    }
+  }
+  for (const op of ops) {
+    if (op.kind === "shot") {
+      const shot = toShot(op.shot);
+      if (!shot) continue;
+      entries = entries.map((e) =>
+        e.id !== op.entryId
+          ? e
+          : {
+              ...e,
+              shots: [...e.shots.filter((s) => s.id !== shot.id), shot].sort(
+                (a, b) => a.pulledAt - b.pulledAt,
+              ),
+            },
+      );
+    } else if (op.kind === "deleteShot") {
+      entries = entries.map((e) => ({ ...e, shots: e.shots.filter((s) => s.id !== op.id) }));
+    }
+  }
+  return { entries, profile };
+}
+
+/** Put what was left unsent back on screen, and back in the queue — in an
+ *  order that's always safe whatever order it was saved in: coffees, then
+ *  shots, then deletes, then the profile. */
+function restoreOutbox() {
+  const outbox = readOutbox();
+  if (!outbox) return;
+  // Someone else's unsent changes are not this ledger's to send.
+  if (outbox.token !== getToken()) {
+    try {
+      localStorage.removeItem(OUTBOX_KEY);
+    } catch {
+      /* nothing to do */
+    }
+    return;
+  }
+
+  patch(applyOps(state.entries, state.profile, outbox.ops));
+
+  const order = { entry: 0, shot: 1, deleteShot: 2, deleteEntry: 3, profile: 4 } as const;
+  for (const op of [...outbox.ops].sort((a, b) => order[a.kind] - order[b.kind])) {
+    if (op.kind === "entry") enqueue(`entry:${op.entry.id}`, writeEntry(op.entry.id));
+    else if (op.kind === "shot") enqueue(`shot:${op.shot.id}`, writeShot(op.entryId, op.shot.id));
+    else if (op.kind === "deleteShot")
+      enqueue(`shot:${op.id}`, () => send("DELETE", shotUrl(op.id), undefined, true));
+    else if (op.kind === "deleteEntry")
+      enqueue(`entry:${op.id}`, () => send("DELETE", entryUrl(op.id), undefined, true));
+    else enqueue("profile", writeProfile);
+  }
+}
+
+/* --------------------------------------------------------------- snapshot */
+
+/** The last copy of the ledger this device knew the server agreed with. It's
+ *  what the app opens on — instantly, and with no connection at all — while
+ *  the server is asked for anything newer. Tagged with the token it belongs
+ *  to; locking the device deletes it. */
+const SNAPSHOT_KEY = "coffeeLedger.snapshot.v1";
+
+function saveSnapshot() {
+  try {
+    const token = getToken();
+    if (!token || state.status !== "ready") return;
+    localStorage.setItem(
+      SNAPSHOT_KEY,
+      JSON.stringify({ token, entries: state.entries, profile: state.profile }),
+    );
+  } catch {
+    /* full or blocked: the app just opens from the server, as before */
+  }
+}
+
+function readSnapshot(): { entries: Entry[]; profile: Profile } | null {
+  try {
+    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { token?: unknown; entries?: unknown; profile?: unknown };
+    if (parsed.token !== getToken() || !Array.isArray(parsed.entries)) return null;
+    return {
+      entries: parsed.entries.map(toEntry).filter((e): e is Entry => e !== null),
+      profile: toProfile(parsed.profile),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Nothing of this ledger left on the device: no copy, no unsent changes. */
+function forgetDevice() {
+  try {
+    localStorage.removeItem(SNAPSHOT_KEY);
+    localStorage.removeItem(OUTBOX_KEY);
+  } catch {
+    /* nothing to do */
+  }
+  outboxSaved = false;
+}
+
+/** Open the ledger: this device's copy straight away if it has one, unsent
+ *  changes on top, then the server for anything newer. */
+export function openLedger() {
+  if (!getToken()) {
+    patch({ status: "locked" });
+    return;
+  }
+  const snapshot = readSnapshot();
+  if (snapshot) {
+    patch({ ...snapshot, status: "ready" });
+    outboxRestored = true;
+    restoreOutbox();
+  }
+  void loadLedger();
+}
+
 /* --------------------------------------------------------------- reading */
 
 let lastLoad = 0;
@@ -354,6 +590,8 @@ export async function loadLedger(force = false): Promise<void> {
 
   let res: Awaited<ReturnType<typeof request>>;
   let profileRes: Awaited<ReturnType<typeof request>> | null;
+  const landed = new Set<string>();
+  landedDuringRead = landed;
   try {
     // Side by side, and the profile is allowed to fail on its own: a coffee
     // list with blank gear is still a working ledger.
@@ -362,6 +600,13 @@ export async function loadLedger(force = false): Promise<void> {
       request("/api/profile").catch(() => null),
     ]);
   } catch (error) {
+    if (landedDuringRead === landed) landedDuringRead = null;
+    // With this device's copy already on screen, no connection just means
+    // working from it; without one there's nothing to show.
+    if (state.status === "ready") {
+      patch({ offline: true });
+      return;
+    }
     patch({
       status: "unreachable",
       loadError: `Couldn't reach the ledger: ${error instanceof Error ? error.message : String(error)}`,
@@ -369,12 +614,18 @@ export async function loadLedger(force = false): Promise<void> {
     return;
   }
 
+  if (landedDuringRead === landed && (!res.ok || res.data === null)) landedDuringRead = null;
+
   if (res.status === 401 || profileRes?.status === 401) {
     lock(REFUSED);
     return;
   }
 
   if (!res.ok || res.data === null) {
+    if (state.status === "ready" && res.data !== null && res.status !== 503) {
+      patch({ offline: true });
+      return;
+    }
     patch({
       status: "unreachable",
       loadError: res.data === null ? NOT_RUNNING : (res.data.error ?? `The ledger answered ${res.status}.`),
@@ -385,18 +636,34 @@ export async function loadLedger(force = false): Promise<void> {
 
   const raw = Array.isArray(res.data.entries) ? res.data.entries : [];
   lastLoad = Date.now();
+  // What the server says, with this device's newer rows laid on top: anything
+  // not sent yet, and anything that landed while the read was out — the read
+  // may have been answered from before it.
+  const newer = [...new Set([...pendingKeys(), ...landed])]
+    .map(opFor)
+    .filter((op): op is OutboxOp => op !== null);
+  if (landedDuringRead === landed) landedDuringRead = null;
+  const merged = applyOps(
+    raw.map(toEntry).filter((e): e is Entry => e !== null),
+    profileRes?.ok && profileRes.data ? toProfile(profileRes.data.profile) : state.profile,
+    newer,
+  );
   patch({
-    entries: raw.map(toEntry).filter((e): e is Entry => e !== null),
-    // Unless a profile edit is still on its way: then what's on screen is
-    // newer than what the server just said.
-    profile:
-      profileRes?.ok && profileRes.data && !timers.has("profile") && !queue.some((j) => j.key === "profile")
-        ? toProfile(profileRes.data.profile)
-        : state.profile,
+    ...merged,
     status: "ready",
+    offline: false,
     loadError: "",
     legacy: countLegacy(),
   });
+
+  // Whatever this device hadn't sent when it was last closed goes on top of
+  // what the server just said, and is sent now. Once per page life: later
+  // reads only happen when nothing is pending.
+  if (!outboxRestored) {
+    outboxRestored = true;
+    restoreOutbox();
+  }
+  if (pendingKeys().length === 0) saveSnapshot();
 }
 
 /** Re-read the ledger, but only when there is nothing of ours in flight — a
@@ -415,13 +682,23 @@ function commit(entries: Entry[]) {
   patch({ entries });
 }
 
+/** What the Add Coffee form collects: the bag, not the kit (gear comes from
+ *  the profile), and nothing that only happens later (a weigh-in, finishing). */
+export type NewCoffee = Omit<
+  Entry,
+  "id" | "createdAt" | "shots" | GearField | "weighedGrams" | "weighedAt" | "finishedAt"
+>;
+
 /** A new coffee is added with the gear from your profile, copied onto it —
  *  not linked — so changing grinders later leaves this bag's grind settings
  *  meaning what they meant when you pulled them. */
-export function addEntry(fields: Omit<Entry, "id" | "createdAt" | "shots" | GearField>): Entry {
+export function addEntry(fields: NewCoffee): Entry {
   const entry: Entry = {
     ...fields,
     ...gearOf(state.profile),
+    weighedGrams: "",
+    weighedAt: null,
+    finishedAt: null,
     id: makeId(),
     createdAt: Date.now(),
     shots: [],
@@ -759,6 +1036,8 @@ export function signOut() {
   clearToken();
   currentToken = "";
   resetLedger();
+  // Locking the device means it keeps nothing of the ledger.
+  forgetDevice();
 }
 
 /** The token the loaded ledger belongs to, so signing in again with the same
@@ -819,8 +1098,7 @@ if (typeof window !== "undefined") {
   patch({ legacy: countLegacy() });
   // No token, nothing to ask for — go straight to the gate rather than making
   // a request that can only come back 401.
-  if (getToken()) void loadLedger();
-  else patch({ status: "locked" });
+  openLedger();
 
   // A tab going away takes its debounce timers with it, so spend them first.
   // pagehide, not beforeunload: it's the one iOS Safari actually fires.

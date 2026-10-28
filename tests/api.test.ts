@@ -177,12 +177,48 @@ describe("coffees", () => {
       grinder: "Niche Zero",
       basket: "VST 18g",
       other: "Puck screen, WDT",
+      bagGrams: "250",
+      restFrom: "14",
+      restTo: "40",
+      weighedGrams: "120",
+      weighedAt: 1_700_100_000_123,
+      finishedAt: 1_700_200_000_456,
     };
     expect((await putEntry(entry)).status).toBe(200);
 
     const { body } = await readLedger();
     expect(body.entries).toHaveLength(1);
+    // Every field, timestamps to the millisecond.
     expect(body.entries[0]).toEqual({ ...entry, shots: [] });
+  });
+
+  it("starts a coffee untracked and in use", async () => {
+    await putEntry({ id: "plain", coffee: "No bag info" });
+    expect((await readLedger()).body.entries[0]).toMatchObject({
+      bagGrams: "",
+      weighedGrams: "",
+      weighedAt: null,
+      finishedAt: null,
+    });
+  });
+
+  it("reopens a finished bag", async () => {
+    await putEntry({ id: "bag", coffee: "Done", finishedAt: 1_700_000_000_000 });
+    await putEntry({ id: "bag", coffee: "Done", finishedAt: null });
+    expect((await readLedger()).body.entries[0].finishedAt).toBeNull();
+  });
+
+  it("upgrades a coffee table made before bags were tracked", async () => {
+    // The real schema has had bag columns since the first request in this
+    // file; drop them to stand in for an older database, then let the next
+    // cold start add them back.
+    await db.exec(`
+      alter table entries drop column bag_grams, drop column rest_from, drop column rest_to,
+        drop column weighed_grams, drop column weighed_at, drop column finished_at;
+    `);
+    forgetSchema();
+    await putEntry({ id: "older", coffee: "From before", bagGrams: "340" });
+    expect((await readLedger()).body.entries[0]).toMatchObject({ bagGrams: "340", finishedAt: null });
   });
 
   it("fills in the columns a partial write left out, instead of failing", async () => {
