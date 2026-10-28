@@ -44,6 +44,8 @@ type Handler = (req: any, res: any) => Promise<void> | void;
 let entriesHandler: Handler;
 let shotsHandler: Handler;
 let sessionHandler: Handler;
+let profileHandler: Handler;
+let forgetSchema: () => void;
 /** The user every test runs as unless it says otherwise. */
 let token = "";
 /** Taken off the module the handlers come from rather than imported at the top
@@ -99,8 +101,10 @@ beforeAll(async () => {
   const entriesModule = await import("../api/entries");
   entriesHandler = entriesModule.default as Handler;
   findConnectionString = entriesModule.findConnectionString;
+  forgetSchema = entriesModule.forgetSchema;
   shotsHandler = (await import("../api/shots")).default as Handler;
   sessionHandler = (await import("../api/session")).default as Handler;
+  profileHandler = (await import("../api/profile")).default as Handler;
 
   // The first request is what creates the tables, and making an account is a
   // request — so by the time any test runs, the schema exists.
@@ -389,7 +393,7 @@ describe("accounts", () => {
       (await call(sessionHandler, { method: "GET", headers: as("cl_" + "x".repeat(43)) })).status,
     ).toBe(401);
     expect((await call(sessionHandler, { method: "GET", headers: as("nonsense") })).status).toBe(401);
-    expect((await call(sessionHandler, { method: "PUT" })).status).toBe(405);
+    expect((await call(sessionHandler, { method: "DELETE" })).status).toBe(405);
   });
 
   describe("every route wants a token", () => {
@@ -402,6 +406,9 @@ describe("accounts", () => {
       ["DELETE /api/entries", () => entriesHandler, { method: "DELETE", query: { id: "x" } }],
       ["POST /api/shots", () => shotsHandler, { method: "POST", body: { entryId: "x", shot: { id: "s" } } }],
       ["DELETE /api/shots", () => shotsHandler, { method: "DELETE", query: { id: "s" } }],
+      ["GET /api/profile", () => profileHandler, { method: "GET" }],
+      ["POST /api/profile", () => profileHandler, { method: "POST", body: { name: "x" } }],
+      ["PUT /api/session", () => sessionHandler, { method: "PUT", body: { token: "sneaky token" } }],
     ];
 
     it.each(attempts)("%s: refused with no header", async (_name, handlerOf, req) => {
@@ -604,5 +611,207 @@ describe("with nothing connected", () => {
     entriesHandler = (await import("../api/entries")).default as Handler;
     shotsHandler = (await import("../api/shots")).default as Handler;
     sessionHandler = (await import("../api/session")).default as Handler;
+  });
+});
+
+/* ------------------------------------------------------- memorable tokens */
+
+const changeToken = (as_: string, next: unknown) =>
+  call(sessionHandler, { method: "PUT", headers: as(as_), body: { token: next } });
+
+const ledgerOf = (who: string) => call(entriesHandler, { method: "GET", headers: as(who) });
+
+describe("choosing a memorable token", () => {
+  it("swaps the issued token for a chosen one: the old stops, the new opens the same ledger", async () => {
+    const issued = await signUp();
+    await call(entriesHandler, {
+      method: "POST",
+      headers: as(issued),
+      body: { id: "mine", coffee: "Kochere" },
+    });
+
+    const changed = await changeToken(issued, "blue moon coffee");
+    expect(changed.status).toBe(200);
+    expect(changed.body.token).toBe("blue moon coffee");
+
+    expect((await ledgerOf(issued)).status).toBe(401);
+    const opened = await ledgerOf("blue moon coffee");
+    expect(opened.status).toBe(200);
+    expect(opened.body.entries.map((e: any) => e.coffee)).toEqual(["Kochere"]);
+  });
+
+  it("isn't case-sensitive and forgives the spaces a phone keyboard adds", async () => {
+    const issued = await signUp();
+    await changeToken(issued, "Yash Espresso");
+    for (const typed of ["yash espresso", "YASH ESPRESSO", "  Yash   Espresso ", "yash espresso "]) {
+      expect((await ledgerOf(typed)).status, typed).toBe(200);
+    }
+  });
+
+  it("hands back the tidied form, which is what the device should keep", async () => {
+    const issued = await signUp();
+    expect((await changeToken(issued, "  Atharva   Pulls  ")).body.token).toBe("atharva pulls");
+  });
+
+  it("stores only a fingerprint of the chosen token", async () => {
+    const issued = await signUp();
+    await changeToken(issued, "remember me please");
+    const dump = JSON.stringify((await db.query("select * from users")).rows);
+    expect(dump).not.toContain("remember me please");
+    expect(dump).toContain(createHash("sha256").update("remember me please").digest("hex"));
+  });
+
+  it("keeps issued tokens exact — case is part of a random token", async () => {
+    const issued = await signUp();
+    const flipped = issued.replace(/[A-Za-z]/g, (c) =>
+      c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+    );
+    expect((await ledgerOf(issued)).status).toBe(200);
+    if (flipped !== issued) expect((await ledgerOf(flipped)).status).toBe(401);
+  });
+
+  it("refuses a token another person already has, and changes nothing", async () => {
+    const yash = await signUp();
+    const atharva = await signUp();
+    expect((await changeToken(yash, "shared morning")).status).toBe(200);
+
+    const clash = await changeToken(atharva, "Shared Morning");
+    expect(clash.status).toBe(409);
+    expect(clash.body.error).toMatch(/already someone's/);
+
+    // Both still open their own ledgers with what they had.
+    expect((await ledgerOf("shared morning")).status).toBe(200);
+    expect((await ledgerOf(atharva)).status).toBe(200);
+  });
+
+  it("allows setting the token you already have", async () => {
+    const issued = await signUp();
+    await changeToken(issued, "same again");
+    expect((await changeToken("same again", "Same Again")).status).toBe(200);
+    expect((await ledgerOf("same again")).status).toBe(200);
+  });
+
+  it.each([
+    ["short", "too short"],
+    ["x".repeat(65), "too long"],
+    ["café crème", "not ASCII — a browser won't send it in a header"],
+    ["cl_mine_now", "reserved for generated tokens"],
+    ["", "empty"],
+    [42, "not a string"],
+  ])("refuses %j (%s) and leaves the old token working", async (next) => {
+    const issued = await signUp();
+    const sent = await changeToken(issued, next);
+    expect(sent.status).toBe(400);
+    expect(typeof sent.body.error).toBe("string");
+    expect((await ledgerOf(issued)).status).toBe(200);
+  });
+
+  it("can't be done without the current token", async () => {
+    expect((await call(sessionHandler, { method: "PUT", headers: {}, body: { token: "takeover1" } })).status).toBe(401);
+    expect((await changeToken("cl_" + "q".repeat(43), "takeover2")).status).toBe(401);
+    expect((await ledgerOf("takeover1")).status).toBe(401);
+    expect((await ledgerOf("takeover2")).status).toBe(401);
+  });
+});
+
+/* --------------------------------------------------------------- profiles */
+
+const profileOf = (who: string) => call(profileHandler, { method: "GET", headers: as(who) });
+const saveProfile = (who: string, body: unknown) =>
+  call(profileHandler, { method: "POST", headers: as(who), body });
+
+describe("profiles", () => {
+  it("starts blank", async () => {
+    const issued = await signUp();
+    const sent = await profileOf(issued);
+    expect(sent.status).toBe(200);
+    expect(sent.body.profile).toEqual({ name: "", machine: "", grinder: "", basket: "", other: "" });
+  });
+
+  it("keeps a name and gear, and reads them back", async () => {
+    const issued = await signUp();
+    const gear = {
+      name: "Yash",
+      machine: "Decent DE1",
+      grinder: "Niche Zero",
+      basket: "VST 18g",
+      other: "Puck screen, WDT",
+    };
+    expect((await saveProfile(issued, gear)).body.profile).toEqual(gear);
+    expect((await profileOf(issued)).body.profile).toEqual(gear);
+  });
+
+  it("follows the person through a token change", async () => {
+    const issued = await signUp();
+    await saveProfile(issued, { name: "Atharva", grinder: "Comandante" });
+    await changeToken(issued, "atharva grinds");
+    expect((await profileOf("atharva grinds")).body.profile).toMatchObject({
+      name: "Atharva",
+      grinder: "Comandante",
+    });
+  });
+
+  it("is one person's: someone else's profile is invisible and untouchable", async () => {
+    const yash = await signUp();
+    const atharva = await signUp();
+    await saveProfile(yash, { name: "Yash", machine: "Decent DE1" });
+    await saveProfile(atharva, { name: "Atharva", machine: "Lelit Bianca" });
+
+    expect((await profileOf(yash)).body.profile).toMatchObject({ name: "Yash", machine: "Decent DE1" });
+    expect((await profileOf(atharva)).body.profile).toMatchObject({ name: "Atharva", machine: "Lelit Bianca" });
+  });
+
+  it("stores what it's sent whole — a field left out is stored blank", async () => {
+    const issued = await signUp();
+    await saveProfile(issued, { name: "Yash", grinder: "Niche Zero" });
+    const sent = await saveProfile(issued, { grinder: "Zerno" });
+    expect(sent.body.profile).toEqual({ name: "", machine: "", grinder: "Zerno", basket: "", other: "" });
+  });
+
+  it("refuses a field long enough to be something other than gear", async () => {
+    const issued = await signUp();
+    const sent = await saveProfile(issued, { name: "Yash", other: "x".repeat(201) });
+    expect(sent.status).toBe(413);
+    expect((await profileOf(issued)).body.profile.name).toBe("");
+  });
+
+  it("answers 405 to a method it doesn't have", async () => {
+    expect((await call(profileHandler, { method: "DELETE" })).status).toBe(405);
+  });
+
+  it("upgrades a users table made before profiles existed", async () => {
+    // A database exactly as main's first token release left it: users with no
+    // profile columns, and someone already in it.
+    const old = await PGlite.create();
+    const known = "cl_" + "a".repeat(43);
+    await old.exec(`
+      create table users (id text primary key, token_hash text not null unique,
+                          created_at timestamptz not null default now());
+      insert into users (id, token_hash) values ('before', '${createHash("sha256").update(known).digest("hex")}');
+    `);
+
+    const runOnMain = holder.run;
+    holder.run = async (text, params) => (await old.query(text, params)).rows as Record<string, unknown>[];
+    forgetSchema();
+    try {
+      expect((await profileOf(known)).body.profile).toEqual({
+        name: "",
+        machine: "",
+        grinder: "",
+        basket: "",
+        other: "",
+      });
+      expect((await saveProfile(known, { name: "Early", grinder: "EK43" })).status).toBe(200);
+      const columns = await old.query<{ column_name: string }>(
+        "select column_name from information_schema.columns where table_name = 'users' order by 1",
+      );
+      expect(columns.rows.map((c) => c.column_name)).toEqual(
+        expect.arrayContaining(["name", "machine", "grinder", "basket", "other"]),
+      );
+    } finally {
+      holder.run = runOnMain;
+      forgetSchema();
+      await old.close();
+    }
   });
 });

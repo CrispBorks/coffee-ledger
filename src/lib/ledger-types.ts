@@ -157,3 +157,51 @@ export function toEntry(value: unknown): Entry | null {
 /** A backstop against a single request filling the table. The form has no way
  *  to produce anything close to this; a script pointed at the API does. */
 export const MAX_ENTRY_BYTES = 200_000;
+
+/* ---------------------------------------------------------------- profile */
+
+/** The gear a coffee is dialled in on. It lives on the profile because it
+ *  hardly ever changes, and is copied onto each coffee as it's added — so a
+ *  new grinder next year doesn't quietly rewrite what "3.2" meant on every bag
+ *  logged before it. Grind settings are only meaningful against the grinder
+ *  they were set on. */
+export const GEAR_FIELDS = ["machine", "grinder", "basket", "other"] as const satisfies readonly EntryTextField[];
+
+export type GearField = (typeof GEAR_FIELDS)[number];
+
+/** One person's side of the ledger: what to call them, and their gear. */
+export type Profile = { name: string } & Record<GearField, string>;
+
+export const PROFILE_FIELDS = ["name", ...GEAR_FIELDS] as const;
+
+export const EMPTY_PROFILE: Profile = {
+  name: "",
+  machine: "",
+  grinder: "",
+  basket: "",
+  other: "",
+};
+
+/** Longer than any machine or grinder name; short enough that a profile can't
+ *  be used to park a document. */
+export const MAX_PROFILE_FIELD_LENGTH = 200;
+
+/** A whole profile from whatever arrived, with anything missing left blank —
+ *  so a request that mentions only the grinder can't blank the name by
+ *  leaving it out; it has to send it. */
+export function toProfile(value: unknown): Profile {
+  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const profile = { ...EMPTY_PROFILE };
+  for (const field of PROFILE_FIELDS) profile[field] = text(raw[field]);
+  return profile;
+}
+
+/** Just the gear, for copying onto a coffee. */
+export function gearOf(profile: Profile): Record<GearField, string> {
+  return {
+    machine: profile.machine,
+    grinder: profile.grinder,
+    basket: profile.basket,
+    other: profile.other,
+  };
+}

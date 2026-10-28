@@ -36,9 +36,8 @@ export function clearToken() {
   }
 }
 
-/** The shape of a token, checked before it is sent anywhere. Mirrors the server
- *  so a typo is caught on the device rather than as a round trip. */
-export const looksLikeToken = (value: string) => /^cl_[A-Za-z0-9_-]{43}$/.test(value);
+/* What counts as a token — issued or chosen — is in ./tokens, shared with
+   the server so the two can't disagree. */
 
 export const authHeader = (): Record<string, string> => {
   const token = getToken();

@@ -3,17 +3,33 @@ import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Field, Section } from "@/components/form-section";
+import { GearSummary } from "@/components/gear-summary";
 import { BackLink, PageShell, SiteFooter } from "@/components/page-shell";
-import { addEntry, EMPTY_ENTRY, useLedger, type Entry } from "@/lib/ledger";
+import {
+  addEntry,
+  EMPTY_ENTRY,
+  GEAR_FIELDS,
+  useLedger,
+  type Entry,
+  type GearField,
+} from "@/lib/ledger";
 
-type FormValues = Omit<Entry, "id" | "createdAt" | "shots">;
+/** The bag, not the kit: gear comes from the profile and is filled in by
+ *  addEntry, so it isn't part of what this form collects. */
+type FormValues = Omit<Entry, "id" | "createdAt" | "shots" | GearField>;
+
+const BLANK = Object.fromEntries(
+  Object.entries(EMPTY_ENTRY).filter(
+    ([field]) => !(GEAR_FIELDS as readonly string[]).includes(field),
+  ),
+) as FormValues;
 
 export function AddEntryPage() {
   const navigate = useNavigate();
-  const { status, needsSetup } = useLedger();
-  const [values, setValues] = React.useState<FormValues>({ ...EMPTY_ENTRY });
+  const { status, needsSetup, profile } = useLedger();
+  const [values, setValues] = React.useState<FormValues>({ ...BLANK });
 
   React.useEffect(() => {
     document.title = "Add a coffee — Coffee Ledger";
@@ -167,50 +183,18 @@ export function AddEntryPage() {
           </Field>
         </Section>
 
-        <Section title="Gear" hint="What you're using this bag with — fills in the shot log for you.">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Machine">
-              {(id) => (
-                <Input
-                  id={id}
-                  value={values.machine}
-                  onChange={set("machine")}
-                  placeholder="Decent DE1"
-                />
-              )}
-            </Field>
-            <Field label="Grinder">
-              {(id) => (
-                <Input
-                  id={id}
-                  value={values.grinder}
-                  onChange={set("grinder")}
-                  placeholder="Niche Zero"
-                />
-              )}
-            </Field>
-            <Field label="Basket">
-              {(id) => (
-                <Input
-                  id={id}
-                  value={values.basket}
-                  onChange={set("basket")}
-                  placeholder="VST 18g"
-                />
-              )}
-            </Field>
-            <Field label="Other">
-              {(id) => (
-                <Input
-                  id={id}
-                  value={values.other}
-                  onChange={set("other")}
-                  placeholder="Puck screen, WDT, etc."
-                />
-              )}
-            </Field>
+        {/* Gear used to be four more fields here, retyped for every bag. It
+            lives on the profile now; this says what will be recorded. */}
+        <section className="rounded-md border border-dashed border-border p-4">
+          <h2 className="label-mono text-muted-foreground">Gear</h2>
+          <div className="mt-2">
+            <GearSummary
+              gear={profile}
+              lead="This coffee will be added with"
+              empty="No gear yet — it's set once, on your profile, and added to every coffee."
+            />
           </div>
-        </Section>
+        </section>
 
         <div className="flex flex-wrap gap-2">
           <Button type="submit">Add to ledger</Button>
@@ -219,48 +203,5 @@ export function AddEntryPage() {
 
       <SiteFooter />
     </PageShell>
-  );
-}
-
-function Section({
-  title,
-  hint,
-  children,
-}: {
-  title: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="flex flex-col">
-      <h2 className="label-mono border-b border-border pb-2 text-muted-foreground">
-        {title}
-      </h2>
-      {hint && <p className="mt-3 text-[13px] text-muted-foreground">{hint}</p>}
-      <div className="mt-4 flex flex-col">{children}</div>
-    </section>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  className,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  className?: string;
-  children: (id: string) => React.ReactNode;
-}) {
-  const id = React.useId();
-  return (
-    <div className={`flex flex-col gap-1.5 ${className ?? ""}`}>
-      <Label htmlFor={id} className="label-mono text-muted-foreground">
-        {label}
-      </Label>
-      {children(id)}
-      {hint && <span className="text-[12px] text-muted-foreground">{hint}</span>}
-    </div>
   );
 }

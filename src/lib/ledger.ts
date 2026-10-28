@@ -23,18 +23,25 @@
 
 import { useSyncExternalStore } from "react";
 
-import { authHeader, clearToken, getToken, looksLikeToken, setToken } from "./auth";
+import { authHeader, clearToken, getToken, setToken } from "./auth";
 import {
   EMPTY_ENTRY,
+  EMPTY_PROFILE,
   EMPTY_SHOT,
+  GEAR_FIELDS,
+  gearOf,
   makeId,
   toEntry,
+  toProfile,
   type Entry,
+  type GearField,
+  type Profile,
   type Shot,
 } from "./ledger-types";
+import { chosenTokenProblem, normalizeToken } from "./tokens";
 
-export { EMPTY_ENTRY, EMPTY_SHOT, makeId };
-export type { Entry, Shot };
+export { EMPTY_ENTRY, EMPTY_PROFILE, EMPTY_SHOT, GEAR_FIELDS, makeId };
+export type { Entry, GearField, Profile, Shot };
 
 /** How long a field rests before its row is written. Long enough that typing a
  *  tasting note is one request, short enough that a glance at the save
@@ -48,6 +55,8 @@ const REFRESH_AFTER_MS = 15_000;
 
 export type LedgerState = {
   entries: Entry[];
+  /** Whose ledger this is, and the gear every new coffee is added with. */
+  profile: Profile;
   /** "locked" until there is a token this server accepts; "loading" until the
    *  first read comes back; "unreachable" if it didn't. */
   status: "locked" | "loading" | "ready" | "unreachable";
@@ -69,6 +78,7 @@ export type LedgerState = {
 
 let state: LedgerState = {
   entries: [],
+  profile: EMPTY_PROFILE,
   status: "loading",
   loadError: "",
   saving: false,
@@ -145,6 +155,13 @@ const timers = new Map<string, { timer: ReturnType<typeof setTimeout>; run: () =
 const failed = new Map<string, Job>();
 let running = false;
 
+/** Set while this device's token is being changed. Nothing new is sent until
+ *  the new token is in place: a write that left under the old token after the
+ *  server had forgotten it would come back 401 and lock the device mid-edit. */
+let holding = false;
+/** The write in flight, so a token change can let it land first. */
+let inFlight: Promise<unknown> = Promise.resolve();
+
 function counts() {
   return {
     saving: running,
@@ -202,7 +219,7 @@ function forget(key: string) {
 let reconcile = false;
 
 async function drain(): Promise<void> {
-  if (running) return;
+  if (running || holding) return;
   const job = queue[0];
   if (!job) {
     patch({});
@@ -214,7 +231,9 @@ async function drain(): Promise<void> {
 
   let result: Result;
   try {
-    result = await job.run();
+    const sending = job.run();
+    inFlight = sending.catch(() => undefined);
+    result = await sending;
   } catch (error) {
     result = { retry: error instanceof Error ? error.message : String(error) };
   }
@@ -243,7 +262,7 @@ async function drain(): Promise<void> {
 
   // Not while anything of ours is still resting in a debounce: a re-read that
   // overwrote a half-typed field would be a worse bug than a stale screen.
-  if (reconcile && queue.length === 0 && timers.size === 0) {
+  if (reconcile && queue.length === 0 && timers.size === 0 && !holding) {
     reconcile = false;
     void loadLedger(true);
   }
@@ -296,6 +315,11 @@ async function send(
   return { retry: said ?? `The ledger answered ${res.status}.` };
 }
 
+/** The profile is one small row, written whole: the server stores a field left
+ *  out as blank, so sending all of it every time is what keeps the name from
+ *  being wiped by a grinder edit. */
+const writeProfile = () => send("POST", "/api/profile", state.profile);
+
 const entryUrl = (id: string) => `/api/entries?id=${encodeURIComponent(id)}`;
 const shotUrl = (id: string) => `/api/shots?id=${encodeURIComponent(id)}`;
 
@@ -329,8 +353,14 @@ export async function loadLedger(force = false): Promise<void> {
   if (force) patch({ status: state.status === "ready" ? "ready" : "loading", loadError: "" });
 
   let res: Awaited<ReturnType<typeof request>>;
+  let profileRes: Awaited<ReturnType<typeof request>> | null;
   try {
-    res = await request("/api/entries");
+    // Side by side, and the profile is allowed to fail on its own: a coffee
+    // list with blank gear is still a working ledger.
+    [res, profileRes] = await Promise.all([
+      request("/api/entries"),
+      request("/api/profile").catch(() => null),
+    ]);
   } catch (error) {
     patch({
       status: "unreachable",
@@ -339,7 +369,7 @@ export async function loadLedger(force = false): Promise<void> {
     return;
   }
 
-  if (res.status === 401) {
+  if (res.status === 401 || profileRes?.status === 401) {
     lock(REFUSED);
     return;
   }
@@ -357,6 +387,12 @@ export async function loadLedger(force = false): Promise<void> {
   lastLoad = Date.now();
   patch({
     entries: raw.map(toEntry).filter((e): e is Entry => e !== null),
+    // Unless a profile edit is still on its way: then what's on screen is
+    // newer than what the server just said.
+    profile:
+      profileRes?.ok && profileRes.data && !timers.has("profile") && !queue.some((j) => j.key === "profile")
+        ? toProfile(profileRes.data.profile)
+        : state.profile,
     status: "ready",
     loadError: "",
     legacy: countLegacy(),
@@ -368,7 +404,7 @@ export async function loadLedger(force = false): Promise<void> {
  *  seconds stale. */
 function refreshIfIdle() {
   if (state.status !== "ready") return;
-  if (queue.length > 0 || timers.size > 0 || failed.size > 0 || running) return;
+  if (queue.length > 0 || timers.size > 0 || failed.size > 0 || running || holding) return;
   if (Date.now() - lastLoad < REFRESH_AFTER_MS) return;
   void loadLedger(true);
 }
@@ -379,13 +415,27 @@ function commit(entries: Entry[]) {
   patch({ entries });
 }
 
-export function addEntry(fields: Omit<Entry, "id" | "createdAt" | "shots">): Entry {
-  const entry: Entry = { ...fields, id: makeId(), createdAt: Date.now(), shots: [] };
+/** A new coffee is added with the gear from your profile, copied onto it —
+ *  not linked — so changing grinders later leaves this bag's grind settings
+ *  meaning what they meant when you pulled them. */
+export function addEntry(fields: Omit<Entry, "id" | "createdAt" | "shots" | GearField>): Entry {
+  const entry: Entry = {
+    ...fields,
+    ...gearOf(state.profile),
+    id: makeId(),
+    createdAt: Date.now(),
+    shots: [],
+  };
   commit([entry, ...state.entries]);
   // Immediate, not debounced: the row has to exist before anything can be
   // logged against it, and the caller is already navigating to its page.
   enqueue(`entry:${entry.id}`, writeEntry(entry.id));
   return entry;
+}
+
+export function updateProfile(fields: Partial<Profile>) {
+  patch({ profile: { ...state.profile, ...fields } });
+  schedule("profile", writeProfile);
 }
 
 export function updateEntry(id: string, fields: Partial<Entry>) {
@@ -552,6 +602,7 @@ function resetLedger(next: Partial<LedgerState> = {}) {
   lastLoad = 0;
   patch({
     entries: [],
+    profile: EMPTY_PROFILE,
     status: "locked",
     loadError: "",
     writeError: "",
@@ -587,9 +638,14 @@ export async function createAccount(): Promise<{ token: string } | { error: stri
 /** Check a token with the server and, if it's good, make it this device's and
  *  load its ledger. A different token than before starts from a clean slate. */
 export async function signIn(raw: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const token = raw.trim();
-  if (!looksLikeToken(token)) {
-    return { ok: false, error: "That doesn't look like a ledger token. It starts with cl_." };
+  // Tidied exactly as the server tidies it, so "Blue Moon " finds "blue moon"
+  // and the device keeps the form that will keep matching.
+  const token = normalizeToken(raw);
+  if (!token) {
+    return {
+      ok: false,
+      error: "That isn't a ledger token — it's the cl_… one you were given, or one you chose (6+ characters).",
+    };
   }
 
   let res: Awaited<ReturnType<typeof request>>;
@@ -616,6 +672,62 @@ export async function signIn(raw: string): Promise<{ ok: true } | { ok: false; e
   currentToken = token;
   await loadLedger(true);
   return { ok: true };
+}
+
+/** Swap this ledger's token for one you chose. This device switches to it
+ *  straight away; every other device is locked out until it's given the new
+ *  one, because the old token stops working the moment this succeeds. */
+export async function changeToken(
+  raw: string,
+): Promise<{ ok: true; token: string } | { ok: false; error: string }> {
+  const problem = chosenTokenProblem(raw);
+  if (problem) return { ok: false, error: problem };
+
+  // Send anything still settling, let the write in flight land under the old
+  // token, and hold the rest until the new one is this device's.
+  flushPending();
+  holding = true;
+  try {
+    await inFlight;
+
+    let res: Awaited<ReturnType<typeof request>>;
+    try {
+      res = await request("/api/session", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: raw }),
+      });
+    } catch {
+      return { ok: false, error: "Couldn't reach the server. Your token hasn't changed." };
+    }
+
+    if (res.status === 401) {
+      lock(REFUSED);
+      return { ok: false, error: REFUSED };
+    }
+    if (res.data === null) return { ok: false, error: NOT_RUNNING };
+    const token = res.data.token;
+    if (!res.ok || typeof token !== "string") {
+      return { ok: false, error: res.data.error ?? `The server answered ${res.status}.` };
+    }
+
+    if (!setToken(token)) {
+      // The server has already switched, so say plainly what this means.
+      return {
+        ok: false,
+        error: `Changed to "${token}", but this browser won't store it — type it in next time you open the ledger.`,
+      };
+    }
+    currentToken = token;
+    return { ok: true, token };
+  } finally {
+    holding = false;
+    if (reconcile && queue.length === 0 && timers.size === 0) {
+      reconcile = false;
+      void loadLedger(true);
+    }
+    void drain();
+  }
 }
 
 /** Take this device out of the ledger. The token isn't revoked — it still works

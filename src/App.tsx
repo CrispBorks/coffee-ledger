@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { AddEntryPage } from "@/pages/add-entry-page";
 import { CatalogPage } from "@/pages/catalog-page";
 import { EntryPage } from "@/pages/entry-page";
+import { ProfilePage } from "@/pages/profile-page";
 import { useLedger } from "@/lib/ledger";
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/" element={<CatalogPage />} />
         <Route path="/entry/:id" element={<EntryPage />} />
         <Route path="/add" element={<AddEntryPage />} />
+        <Route path="/profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <Toaster />

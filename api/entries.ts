@@ -13,7 +13,8 @@
  *  Every route needs `Authorization: Bearer <token>`. A token names one user
  *  and a user owns their own coffees: every query below is scoped to the user
  *  the token resolves to, so one person's ledger is invisible to another's.
- *  Tokens come from POST /api/session and only their SHA-256 is stored. */
+ *  Tokens come from POST /api/session — and can be swapped for a memorable
+ *  one with PUT /api/session — and only their SHA-256 is stored. */
 
 import { createHash, randomBytes } from "node:crypto";
 
@@ -28,6 +29,7 @@ import {
   type Entry,
   type Shot,
 } from "../src/lib/ledger-types.js";
+import { normalizeToken } from "../src/lib/tokens.js";
 
 export type Req = {
   method?: string;
@@ -95,6 +97,17 @@ function ensureSchema(sql: Sql): Promise<void> {
         token_hash text        not null unique,
         created_at timestamptz not null default now()
       )
+    `;
+    // The profile: a name, and the gear that used to be typed into every new
+    // coffee. Added in place so a database made before profiles existed
+    // upgrades on its next cold start, with every existing user blank.
+    await sql`
+      alter table users
+        add column if not exists name    text not null default '',
+        add column if not exists machine text not null default '',
+        add column if not exists grinder text not null default '',
+        add column if not exists basket  text not null default '',
+        add column if not exists other   text not null default ''
     `;
     await sql`
       create table if not exists entries (
@@ -288,25 +301,31 @@ export const one = (value: string | string[] | undefined) =>
 
 /* ------------------------------------------------------------------ auth */
 
-/** 32 random bytes, base64url: 43 characters after the prefix. The prefix is
- *  there so a token pasted into the wrong place is recognisable as one. */
-export const TOKEN_PATTERN = /^cl_[A-Za-z0-9_-]{43}$/;
+/** Which tokens are accepted, and how a chosen one is tidied, lives in
+ *  src/lib/tokens.ts so the app checks a typed token by the same rules. */
 
+/** A fast hash, not a password hash, and the lookup is an indexed equality
+ *  rather than a scan.
+ *
+ *  For an issued token that is plainly right: 256 random bits leave nothing to
+ *  brute-force. A chosen token is weaker by design — it is only as strong as
+ *  it is hard to guess, and a copy of this table would let someone test
+ *  guesses offline quickly. That is the trade for a token you can remember;
+ *  the profile page says as much and asks for at least six characters. */
 export const hashToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
 
-/** A fast hash is right here, not a password hash: the input is 256 bits of
- *  randomness, so there is nothing to brute-force, and it lets the lookup be
- *  an indexed equality instead of a scan. */
 export function newToken(): string {
   return `cl_${randomBytes(32).toString("base64url")}`;
 }
 
+/** The token part of `Authorization: Bearer …`, untidied. A chosen token can
+ *  contain spaces ("blue moon"), so everything after the scheme counts. */
 export function bearerToken(req: Req): string {
   const header = req.headers.authorization;
   const value = Array.isArray(header) ? header[0] : header;
-  const match = /^Bearer\s+(\S+)$/i.exec(value ?? "");
-  return match ? match[1] : "";
+  const match = /^Bearer\s+(.+)$/i.exec(value ?? "");
+  return match ? match[1].trim() : "";
 }
 
 export const UNAUTHORIZED = {
@@ -316,9 +335,10 @@ export const UNAUTHORIZED = {
 
 /** The id of the user this request's token belongs to, or null. */
 export async function authenticate(sql: Sql, req: Req): Promise<string | null> {
-  const token = bearerToken(req);
-  // Rejecting a malformed token here keeps junk out of the database round trip.
-  if (!TOKEN_PATTERN.test(token)) return null;
+  // Tidied the way it was when it was chosen, so "Blue Moon" finds "blue moon".
+  // Anything that can't be a token of either kind never reaches the database.
+  const token = normalizeToken(bearerToken(req));
+  if (!token) return null;
   const rows = (await sql`
     select id from users where token_hash = ${hashToken(token)}
   `) as { id: string }[];
