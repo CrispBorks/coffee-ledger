@@ -44,6 +44,40 @@ landed, which is nearly always.
 still exports `useEntries()`, `addShot()`, `updateEntry()` and the rest. The
 pages didn't have to learn about any of the above.
 
+### Bags
+
+Each coffee is one bag. Add Coffee asks for its size, and its **rest window**,
+the stretch of days off roast when it's good for espresso. By default the
+window comes from the roast level (light: day 14–42, medium: 7–30, dark:
+4–21); any bag can set its own days. These are rules of thumb, not facts. The
+coffee and its card in the ledger say *Resting · ready Oct 24*, *In its window ·
+until Nov 21*, or *Past its best*.
+
+**Grams left** is the bag size minus every dose logged on it, with shots left
+worked out from your recent doses. Shots that aren't logged (purges, a
+pour-over, a guest) make it drift, so **Weigh it** lets you put the beans on a
+scale and count down from that instead.
+
+When the count says the bag is empty, the app **asks** whether to finish it;
+it never finishes one on its own. A finished bag keeps everything (its shots
+and its starred recipe), stops taking new shots, and moves to a folded
+**Finished** section at the bottom of the ledger. **Reopen** undoes it.
+
+### On the home screen
+
+Add it to the home screen (Safari → Share → Add to Home Screen) and it opens
+full screen, as **Coffee**, with its own icon.
+
+- `public/sw.js` keeps the app itself on the phone, so it opens with no
+  connection at all. It never caches `/api`.
+- The app keeps its own copy of your ledger on the device and opens on it
+  straight away, then asks the server for anything newer. With no connection
+  it says *Offline · showing what's saved on this device*, and anything you log
+  is kept and sent when the connection is back, even if the app is closed in
+  between.
+- **Lock this device** deletes that copy, and anything unsent, along with the
+  token.
+
 ### Schema
 
 Two tables, created on first use — there's no migration step to run.

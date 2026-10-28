@@ -21,7 +21,8 @@ import { LedgerUnreachable } from "@/components/ledger-status";
 import { BackLink, PageShell, SiteFooter } from "@/components/page-shell";
 import { ShotComposer, readDraft } from "@/components/shot-composer";
 import { ShotList } from "@/components/shot-list";
-import { deleteEntry, useEntry, useLedger } from "@/lib/ledger";
+import { finishedText } from "@/lib/bags";
+import { deleteEntry, updateEntry, useEntry, useLedger } from "@/lib/ledger";
 
 export function EntryPage() {
   const { id } = useParams<{ id: string }>();
@@ -64,6 +65,8 @@ export function EntryPage() {
     );
   }
 
+  const finished = entry.finishedAt !== null;
+
   const onDelete = () => {
     deleteEntry(entry.id);
     toast.success("Removed from the ledger");
@@ -105,6 +108,20 @@ export function EntryPage() {
         {entry.coffee.trim() || "Untitled coffee"}
       </h1>
 
+      {/* A finished bag keeps everything — the point is the record of what
+          worked — but stops taking new shots unless it's reopened. */}
+      {finished && (
+        <div
+          role="status"
+          className="mt-4 flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/50 p-3"
+        >
+          <p className="min-w-0 flex-1 text-[14px]">{finishedText(entry)}</p>
+          <Button variant="outline" size="sm" onClick={() => updateEntry(entry.id, { finishedAt: null })}>
+            Reopen
+          </Button>
+        </div>
+      )}
+
       <div className="mt-4">
         <CoffeeCard entry={entry} />
       </div>
@@ -114,7 +131,7 @@ export function EntryPage() {
           <h2 className="label-mono text-muted-foreground">
             Shots{entry.shots.length > 0 && ` · ${entry.shots.length}`}
           </h2>
-          {!composing && (
+          {!composing && !finished && (
             <Button className="no-print h-10" onClick={() => setComposing(true)}>
               <PlusIcon />
               Log shot
@@ -123,7 +140,7 @@ export function EntryPage() {
         </div>
 
         <div className="mt-4 flex flex-col gap-3">
-          {composing && (
+          {composing && !finished && (
             <ShotComposer
               entryId={entry.id}
               number={entry.shots.length + 1}
@@ -134,7 +151,7 @@ export function EntryPage() {
           {entry.shots.length === 0
             ? !composing && (
                 <p className="rounded-md border border-dashed border-border p-6 text-center text-[14px] text-muted-foreground">
-                  No shots yet. Pull one, then log it here.
+                  {finished ? "No shots were logged on this bag." : "No shots yet. Pull one, then log it here."}
                 </p>
               )
             : <ShotList entry={entry} />}

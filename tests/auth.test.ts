@@ -381,3 +381,165 @@ describe("the profile", () => {
     expect(ledger.ledgerState().profile).toEqual(ledger.EMPTY_PROFILE);
   });
 });
+
+/* ------------------------------------------- the app closing and reopening */
+
+/** The network refuses everything, the way a phone in a basement does. */
+function goOffline() {
+  globalThis.fetch = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
+}
+
+/** Back online, with `reply` answering again. */
+function goOnline(original: typeof fetch) {
+  globalThis.fetch = original;
+}
+
+describe("closing the app with changes unsent", () => {
+  it("keeps a change that couldn't be sent, and sends it when the app opens again", async () => {
+    const online = globalThis.fetch;
+    const ledger = await signedIn();
+    goOffline();
+    ledger.updateEntry("k", { roaster: "Sey" });
+    await until(() => ledger.ledgerState().failed === 1, "the write to be held");
+    expect(storage.has("coffeeLedger.outbox.v1")).toBe(true);
+
+    // The app is closed; it opens again, online, and the server still has the
+    // old roaster.
+    goOnline(online);
+    calls = [];
+    const again = await freshLedger();
+    again.openLedger();
+    await until(() => calls.some((c) => c.method === "POST" && c.url === "/api/entries"), "the resend");
+
+    expect(calls.find((c) => c.method === "POST")?.body.roaster).toBe("Sey");
+    await until(() => again.ledgerState().unsaved === 0, "it to land");
+    expect(again.ledgerState().entries[0].roaster).toBe("Sey");
+    expect(storage.has("coffeeLedger.outbox.v1")).toBe(false);
+  });
+
+  it("sends a coffee and a shot logged offline in the right order", async () => {
+    const online = globalThis.fetch;
+    const ledger = await signedIn();
+    goOffline();
+    const entry = ledger.addEntry({ ...ledger.EMPTY_ENTRY, coffee: "Offline bag" });
+    ledger.addShot(entry.id, { dose: "18", yield: "40" });
+    await until(() => ledger.ledgerState().failed === 2, "both to be held");
+
+    goOnline(online);
+    calls = [];
+    const again = await freshLedger();
+    again.openLedger();
+    await until(() => again.ledgerState().unsaved === 0, "both to land");
+
+    const writes = calls.filter((c) => c.method === "POST").map((c) => c.url);
+    expect(writes.indexOf("/api/entries")).toBeLessThan(writes.indexOf("/api/shots"));
+    const shown = again.ledgerState().entries.find((e) => e.id === entry.id);
+    expect(shown?.coffee).toBe("Offline bag");
+    expect(shown?.shots.map((s) => s.dose)).toEqual(["18"]);
+  });
+
+  it("keeps a delete that couldn't be sent", async () => {
+    const online = globalThis.fetch;
+    const ledger = await signedIn();
+    goOffline();
+    ledger.deleteEntry("k");
+    await until(() => ledger.ledgerState().failed === 1, "the delete to be held");
+
+    goOnline(online);
+    calls = [];
+    const again = await freshLedger();
+    again.openLedger();
+    await until(() => calls.some((c) => c.method === "DELETE"), "the delete");
+    // Gone on screen even though the server still listed it when asked.
+    expect(again.ledgerState().entries.find((e) => e.id === "k")).toBeUndefined();
+  });
+});
+
+describe("opening with no connection", () => {
+  it("shows this device's copy straight away, and says it's offline", async () => {
+    await signedIn();
+    goOffline();
+    const again = await freshLedger();
+    again.openLedger();
+
+    // Ready before any answer — the copy is the first paint.
+    expect(again.ledgerState().status).toBe("ready");
+    expect(again.ledgerState().entries.map((e) => e.coffee)).toEqual(["Kochere"]);
+    expect(again.ledgerState().profile.name).toBe("Yash");
+    await until(() => again.ledgerState().offline, "the offline flag");
+    expect(again.ledgerState().status).toBe("ready");
+  });
+
+  it("logs a shot offline, and sends it once the connection is back", async () => {
+    const online = globalThis.fetch;
+    await signedIn();
+    goOffline();
+    const again = await freshLedger();
+    again.openLedger();
+    again.addShot("k", { dose: "18" });
+    await until(() => again.ledgerState().failed === 1, "the shot to be held");
+
+    goOnline(online);
+    calls = [];
+    again.retryFailed();
+    await until(() => again.ledgerState().unsaved === 0, "the shot to land");
+    expect(calls.find((c) => c.url === "/api/shots")?.body.shot.dose).toBe("18");
+    expect(again.ledgerState().offline).toBe(false);
+  });
+
+  it("doesn't let a slow first read undo what was typed while it was out", async () => {
+    const online = globalThis.fetch;
+    await signedIn();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      if (String(url) === "/api/entries" && (init?.method ?? "GET") === "GET") await gate;
+      return online(url as string, init);
+    }) as typeof fetch;
+
+    const again = await freshLedger();
+    again.openLedger();
+    again.updateEntry("k", { roaster: "Typed while loading" });
+    release(); // the server answers with the old roaster
+    await until(() => again.ledgerState().unsaved === 0, "the edit to land");
+    expect(again.ledgerState().entries[0].roaster).toBe("Typed while loading");
+  });
+});
+
+describe("whose copy it is", () => {
+  it("never opens on another person's copy or sends their changes", async () => {
+    storage.set("coffeeLedger.token", GOOD);
+    storage.set(
+      "coffeeLedger.snapshot.v1",
+      JSON.stringify({ token: OTHER, entries: [{ id: "theirs", coffee: "Not yours" }], profile: {} }),
+    );
+    storage.set(
+      "coffeeLedger.outbox.v1",
+      JSON.stringify({ token: OTHER, ops: [{ kind: "deleteEntry", id: "k" }] }),
+    );
+    reply = (call) => (call.url === "/api/entries" ? { body: { entries: [{ id: "k", coffee: "Kochere" }] } } : {});
+
+    const ledger = await freshLedger();
+    ledger.openLedger();
+    expect(ledger.ledgerState().entries).toEqual([]); // nothing shown from their copy
+    await until(() => ledger.ledgerState().status === "ready", "the server's answer");
+    expect(ledger.ledgerState().entries.map((e) => e.coffee)).toEqual(["Kochere"]);
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(storage.has("coffeeLedger.outbox.v1")).toBe(false);
+  });
+
+  it("forgets the copy and any unsent changes when the device is locked", async () => {
+    const ledger = await signedIn();
+    goOffline();
+    ledger.updateEntry("k", { roaster: "Sey" });
+    await until(() => ledger.ledgerState().failed === 1, "the write to be held");
+    expect(storage.has("coffeeLedger.snapshot.v1")).toBe(true);
+    expect(storage.has("coffeeLedger.outbox.v1")).toBe(true);
+
+    ledger.signOut();
+    expect(storage.has("coffeeLedger.snapshot.v1")).toBe(false);
+    expect(storage.has("coffeeLedger.outbox.v1")).toBe(false);
+  });
+});

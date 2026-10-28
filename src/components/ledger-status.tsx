@@ -11,7 +11,22 @@ import { dismissLegacy, importLegacy, loadLedger, retryFailed, useLedger } from 
  *  that saving is not a button you press, so the only thing worth showing is
  *  when it hasn't worked. Rendered by PageShell, so it's on every page. */
 export function LedgerStatus() {
-  const { saving, unsaved, failed, writeError } = useLedger();
+  const { saving, unsaved, failed, writeError, offline } = useLedger();
+
+  // Offline with nothing waiting is worth a quiet word, not an alarm: what's
+  // on screen is this device's copy, and anything logged will follow.
+  if (offline && failed === 0 && writeError === "" && !(saving && unsaved > 0)) {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="no-print fixed right-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-40 flex max-w-[min(26rem,calc(100vw-2rem))] items-center gap-2 rounded-md border border-border bg-card px-3 py-2 shadow-card"
+      >
+        <CloudOffIcon className="size-4 shrink-0 text-muted-foreground" />
+        <p className="text-[13px] leading-snug">Offline · showing what's saved on this device</p>
+      </div>
+    );
+  }
 
   if (failed === 0 && writeError === "" && !(saving && unsaved > 0)) return null;
   const wrong = failed > 0 || writeError !== "";

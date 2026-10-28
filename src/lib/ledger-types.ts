@@ -52,6 +52,21 @@ export type Entry = {
   grinder: string;
   basket: string;
   other: string;
+  // The bag
+  /** Bag size in grams, as typed ("250"). */
+  bagGrams: string;
+  /** The rest window, in days off roast ("12", "40"). Blank means "the usual
+   *  for its roast level" — see restWindowOf in bags.ts — so a bag nobody
+   *  tuned follows its roast level if that's corrected later. */
+  restFrom: string;
+  restTo: string;
+  /** A weigh-in: what was left on the scale, and when. Grams left count down
+   *  from this instead of the bag size, which is how drift from unlogged
+   *  shots and purges gets corrected. */
+  weighedGrams: string;
+  weighedAt: number | null;
+  /** When the bag was finished; null while it's still in use. */
+  finishedAt: number | null;
   // Shots
   shots: Shot[];
 };
@@ -73,6 +88,10 @@ export const ENTRY_TEXT_FIELDS = [
   "grinder",
   "basket",
   "other",
+  "bagGrams",
+  "restFrom",
+  "restTo",
+  "weighedGrams",
 ] as const;
 
 export type EntryTextField = (typeof ENTRY_TEXT_FIELDS)[number];
@@ -128,6 +147,10 @@ const extraction = (value: unknown): number | null => {
   return Math.min(100, Math.max(0, Math.round(n)));
 };
 
+/** A time in ms, or null — for things that may not have happened yet. */
+const moment = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+
 /** A time in ms, or now. */
 const instant = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? value : Date.now();
@@ -156,6 +179,8 @@ export function toEntry(value: unknown): Entry | null {
 
   const entry = { id: raw.id } as Entry;
   for (const field of ENTRY_TEXT_FIELDS) entry[field] = text(raw[field]);
+  entry.weighedAt = moment(raw.weighedAt);
+  entry.finishedAt = moment(raw.finishedAt);
   entry.createdAt =
     typeof raw.createdAt === "number" && Number.isFinite(raw.createdAt)
       ? raw.createdAt

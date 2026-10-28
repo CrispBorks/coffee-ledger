@@ -73,7 +73,6 @@ function ShotCard({
   const details = [
     shot.grind.trim() && `grind ${shot.grind.trim()}`,
     shot.infusion.trim() && `pre-infusion ${shot.infusion.trim()}s`,
-    shot.ps && "pre-soak",
     shot.temp.trim() && `${shot.temp.trim()}°C`,
     shot.rpm.trim() && `${shot.rpm.trim()} rpm`,
   ].filter(Boolean);

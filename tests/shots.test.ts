@@ -111,13 +111,12 @@ describe("changesFrom", () => {
   });
 
   it("lists every change, in a dialling-in order", () => {
-    const after = { ...before, grind: "3.0", timeSec: "31", ps: true };
-    expect(changesFrom(before, after).map((c) => c.label)).toEqual(["grind", "time", "pre-soak"]);
-    expect(changesFrom(before, after).find((c) => c.label === "pre-soak")).toEqual({
-      label: "pre-soak",
-      from: "off",
-      to: "on",
-    });
+    const after = { ...before, grind: "3.0", timeSec: "31", infusion: "8" };
+    expect(changesFrom(before, after).map((c) => c.label)).toEqual(["grind", "time", "pre-infusion"]);
+  });
+
+  it("doesn't mention pre-soak, which the app no longer shows", () => {
+    expect(changesFrom(before, { ...before, ps: true })).toEqual([]);
   });
 
   it("compares times in seconds, whatever way they were stored", () => {

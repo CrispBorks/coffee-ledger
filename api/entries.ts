@@ -161,6 +161,18 @@ function ensureSchema(sql: Sql): Promise<void> {
       create index if not exists entries_user_id_created_at_idx
         on entries (user_id, created_at desc)
     `;
+    // The bag: its size, its rest window, a weigh-in, and when it was
+    // finished. Added in place; every existing coffee starts with none of it,
+    // which reads as "untracked" and "still in use".
+    await sql`
+      alter table entries
+        add column if not exists bag_grams     text not null default '',
+        add column if not exists rest_from     text not null default '',
+        add column if not exists rest_to       text not null default '',
+        add column if not exists weighed_grams text not null default '',
+        add column if not exists weighed_at    timestamptz,
+        add column if not exists finished_at   timestamptz
+    `;
     // "Not tasted yet" is null now. It used to default to 50, which read as
     // balanced. Dropping NOT NULL is a no-op the second time round.
     await sql`alter table shots alter column extraction drop not null`;
@@ -196,6 +208,12 @@ export type EntryRow = {
   grinder: string;
   basket: string;
   other: string;
+  bag_grams: string;
+  rest_from: string;
+  rest_to: string;
+  weighed_grams: string;
+  weighed_at: Date | string | null;
+  finished_at: Date | string | null;
   created_at: Date | string;
 };
 
@@ -254,9 +272,18 @@ function rowToEntry(row: EntryRow, shots: Shot[]): Entry {
     grinder: row.grinder,
     basket: row.basket,
     other: row.other,
+    bagGrams: row.bag_grams,
+    restFrom: row.rest_from,
+    restTo: row.rest_to,
+    weighedGrams: row.weighed_grams,
+    weighedAt: row.weighed_at === null ? null : new Date(row.weighed_at).getTime(),
+    finishedAt: row.finished_at === null ? null : new Date(row.finished_at).getTime(),
     shots,
   };
 }
+
+/** A moment in ms as a SQL timestamp, or null. */
+const at = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
 
 /** Opens the connection and makes sure the tables exist, or hands back the
  *  response explaining why it couldn't. Shared with /api/shots. */
@@ -438,14 +465,17 @@ export default async function handler(req: Req, res: Res) {
         insert into entries (
           id, coffee, roaster, origins, altitude, tasting_notes,
           roast_level, roast_date, process, variety, comments,
-          machine, grinder, basket, other, created_at, user_id
+          machine, grinder, basket, other, created_at, user_id,
+          bag_grams, rest_from, rest_to, weighed_grams, weighed_at, finished_at
         ) values (
           ${entry.id}, ${entry.coffee}, ${entry.roaster}, ${entry.origins},
           ${entry.altitude}, ${entry.tastingNotes}, ${entry.roastLevel},
           ${entry.roastDate}, ${entry.process}, ${entry.variety},
           ${entry.comments}, ${entry.machine}, ${entry.grinder},
           ${entry.basket}, ${entry.other}, to_timestamp(${entry.createdAt} / 1000.0),
-          ${userId}
+          ${userId},
+          ${entry.bagGrams}, ${entry.restFrom}, ${entry.restTo}, ${entry.weighedGrams},
+          ${at(entry.weighedAt)}::timestamptz, ${at(entry.finishedAt)}::timestamptz
         )
         on conflict (id) do update set
           coffee        = excluded.coffee,
@@ -462,6 +492,12 @@ export default async function handler(req: Req, res: Res) {
           grinder       = excluded.grinder,
           basket        = excluded.basket,
           other         = excluded.other,
+          bag_grams     = excluded.bag_grams,
+          rest_from     = excluded.rest_from,
+          rest_to       = excluded.rest_to,
+          weighed_grams = excluded.weighed_grams,
+          weighed_at    = excluded.weighed_at,
+          finished_at   = excluded.finished_at,
           updated_at    = now()
         where entries.user_id = excluded.user_id
         returning *

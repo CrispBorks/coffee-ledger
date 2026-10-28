@@ -2,6 +2,7 @@ import * as React from "react";
 import { ChevronDownIcon, StarIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { NumberField } from "@/components/form-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +18,6 @@ export type ShotForm = {
   yield: string;
   time: string;
   infusion: string;
-  ps: boolean;
   notes: string;
   temp: string;
   rpm: string;
@@ -31,7 +31,6 @@ export const EMPTY_FORM: ShotForm = {
   yield: "",
   time: "",
   infusion: "",
-  ps: false,
   notes: "",
   temp: "",
   rpm: "",
@@ -46,7 +45,6 @@ export function formOf(shot: Shot): ShotForm {
     yield: shot.yield,
     time: timeFieldOf(shot),
     infusion: shot.infusion,
-    ps: shot.ps,
     notes: shot.notes,
     temp: shot.temp,
     rpm: shot.rpm,
@@ -179,7 +177,10 @@ export function ShotComposer({
 /** The shot's inputs, shared by the composer and by editing a logged shot so
  *  the two can't drift apart. Grind, dose, yield and time first — the four
  *  numbers every shot has — then pre-infusion, taste and notes; temperature
- *  and RPM behind "More". */
+ *  and RPM behind "More".
+ *
+ *  There's no pre-soak switch any more. Shots still carry the stored value
+ *  (`ps`), untouched, so nothing already logged changes. */
 export function ShotFields({
   form,
   onChange,
@@ -222,23 +223,8 @@ export function ShotFields({
         )}
       </p>
 
-      {/* Stacked below 360px, where "Pre-infusion" can't fit half a row. */}
-      <div className="grid grid-cols-1 items-end gap-3 min-[360px]:grid-cols-2">
+      <div className="grid grid-cols-2 gap-3">
         <NumberField label="Pre-infusion" unit="s" value={form.infusion} onChange={text("infusion")} />
-        <button
-          type="button"
-          aria-pressed={form.ps}
-          onClick={() => onChange({ ps: !form.ps })}
-          className={cn(
-            "label-mono flex h-11 items-center justify-center rounded-md border transition-colors",
-            "focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-none",
-            form.ps
-              ? "border-foreground bg-foreground text-background"
-              : "border-input bg-card text-muted-foreground hover:text-foreground",
-          )}
-        >
-          Pre-soak {form.ps ? "on" : "off"}
-        </button>
       </div>
 
       <TasteScale value={form.extraction} onChange={(extraction) => onChange({ extraction })} />
@@ -260,41 +246,6 @@ export function ShotFields({
             <NumberField label="Temp" unit="°C" value={form.temp} onChange={text("temp")} />
             <NumberField label="RPM" value={form.rpm} onChange={text("rpm")} />
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** A labelled box for a number, with its unit inside on the right. Text, not
- *  type="number": "~18.2" and "18,2" are both things people type, and number
- *  inputs silently empty themselves on anything they don't parse. The decimal
- *  keypad still comes up on a phone. */
-function NumberField({
-  label,
-  unit,
-  className,
-  ...props
-}: React.ComponentProps<"input"> & { label: string; unit?: string }) {
-  const id = React.useId();
-  return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <Label htmlFor={id} className="label-mono text-muted-foreground">
-        {label}
-      </Label>
-      <div className="relative">
-        <Input
-          id={id}
-          inputMode="decimal"
-          autoComplete="off"
-          enterKeyHint="next"
-          {...props}
-          className={cn("h-11 font-mono", unit && "pr-9", className)}
-        />
-        {unit && (
-          <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 font-mono text-[13px] text-muted-foreground">
-            {unit}
-          </span>
         )}
       </div>
     </div>
