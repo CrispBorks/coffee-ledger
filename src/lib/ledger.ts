@@ -454,8 +454,12 @@ export function deleteEntry(id: string) {
   enqueue(`entry:${id}`, () => send("DELETE", entryUrl(id), undefined, true));
 }
 
-export function addShot(entryId: string): string {
-  const shot: Shot = { ...EMPTY_SHOT, id: makeId() };
+/** Log a shot, with whatever was filled in, as one write. */
+export function addShot(
+  entryId: string,
+  fields: Partial<Omit<Shot, "id" | "pulledAt">> = {},
+): string {
+  const shot: Shot = { ...EMPTY_SHOT, ...fields, id: makeId(), pulledAt: Date.now() };
   commit(
     state.entries.map((e) => (e.id === entryId ? { ...e, shots: [...e.shots, shot] } : e)),
   );
@@ -474,7 +478,11 @@ export function updateShot(entryId: string, shotId: string, fields: Partial<Shot
   schedule(`shot:${shotId}`, writeShot(entryId, shotId));
 }
 
-export function deleteShot(entryId: string, shotId: string) {
+/** Remove a shot, and hand it back so it can be restored. */
+export function deleteShot(entryId: string, shotId: string): Shot | undefined {
+  const removed = state.entries
+    .find((e) => e.id === entryId)
+    ?.shots.find((s) => s.id === shotId);
   forget(`shot:${shotId}`);
   commit(
     state.entries.map((e) =>
@@ -482,6 +490,21 @@ export function deleteShot(entryId: string, shotId: string) {
     ),
   );
   enqueue(`shot:${shotId}`, () => send("DELETE", shotUrl(shotId), undefined, true));
+  return removed;
+}
+
+/** Undo a delete: the same shot, same id, back where it was in the log. It
+ *  shares the delete's queue key, so if the delete hasn't been sent yet this
+ *  replaces it and the server never hears about either. */
+export function restoreShot(entryId: string, shot: Shot) {
+  commit(
+    state.entries.map((e) => {
+      if (e.id !== entryId || e.shots.some((s) => s.id === shot.id)) return e;
+      const shots = [...e.shots, shot].sort((a, b) => a.pulledAt - b.pulledAt);
+      return { ...e, shots };
+    }),
+  );
+  enqueue(`shot:${shot.id}`, writeShot(entryId, shot.id));
 }
 
 /** Send everything that's still resting in a debounce timer, now. Called when

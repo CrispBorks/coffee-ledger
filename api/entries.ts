@@ -161,6 +161,9 @@ function ensureSchema(sql: Sql): Promise<void> {
       create index if not exists entries_user_id_created_at_idx
         on entries (user_id, created_at desc)
     `;
+    // "Not tasted yet" is null now. It used to default to 50, which read as
+    // balanced. Dropping NOT NULL is a no-op the second time round.
+    await sql`alter table shots alter column extraction drop not null`;
     // Every read is "the shots for these entries, in the order they were
     // pulled", so that is what the index covers.
     await sql`
@@ -209,8 +212,9 @@ export type ShotRow = {
   temp: string;
   infusion: string;
   pre_soak: boolean;
-  extraction: number;
+  extraction: number | null;
   notes: string;
+  created_at: Date | string;
 };
 
 export function rowToShot(row: ShotRow): Shot {
@@ -228,6 +232,7 @@ export function rowToShot(row: ShotRow): Shot {
     ps: row.pre_soak,
     extraction: row.extraction,
     notes: row.notes,
+    pulledAt: new Date(row.created_at).getTime(),
   };
 }
 

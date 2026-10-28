@@ -252,11 +252,42 @@ describe("shots", () => {
       ps: true,
       extraction: 62,
       notes: "Best so far",
+      pulledAt: 1_700_000_000_123,
     };
     expect((await putShot("kochere", shot)).status).toBe(200);
 
     const { body } = await readLedger();
+    // Exactly, to the millisecond it was pulled.
     expect(body.entries[0].shots).toEqual([shot]);
+  });
+
+  it("keeps a shot that hasn't been tasted as not tasted", async () => {
+    await putShot("kochere", { id: "s1", dose: "18", extraction: null });
+    const [stored] = (await readLedger()).body.entries[0].shots;
+    expect(stored.extraction).toBeNull();
+    // And tasting it later sets it.
+    await putShot("kochere", { ...stored, extraction: 30 });
+    expect((await readLedger()).body.entries[0].shots[0].extraction).toBe(30);
+  });
+
+  it("orders the log by when shots were pulled, so a restored shot goes back in its place", async () => {
+    await putShot("kochere", { id: "first", pulledAt: 1_000_000 });
+    await putShot("kochere", { id: "third", pulledAt: 3_000_000 });
+    // Deleted and restored: written last, but pulled second.
+    await putShot("kochere", { id: "second", pulledAt: 2_000_000 });
+    expect((await readLedger()).body.entries[0].shots.map((s: any) => s.id)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+  });
+
+  it("never moves a shot's pull time when it's edited", async () => {
+    await putShot("kochere", { id: "s1", pulledAt: 1_000_000 });
+    await putShot("kochere", { id: "s1", dose: "18.4", pulledAt: 9_000_000 });
+    const [stored] = (await readLedger()).body.entries[0].shots;
+    expect(stored.dose).toBe("18.4");
+    expect(stored.pulledAt).toBe(1_000_000);
   });
 
   it("keeps the shot log in the order the shots were pulled", async () => {
@@ -608,9 +639,16 @@ describe("with nothing connected", () => {
 
     process.env = saved;
     vi.resetModules();
-    entriesHandler = (await import("../api/entries")).default as Handler;
+    // Every handle on the module, not just the handlers: a stale forgetSchema
+    // would reset the old module's memo while requests go to the new one, and
+    // a later upgrade test would silently run against an un-upgraded schema.
+    const entriesModule = await import("../api/entries");
+    entriesHandler = entriesModule.default as Handler;
+    findConnectionString = entriesModule.findConnectionString;
+    forgetSchema = entriesModule.forgetSchema;
     shotsHandler = (await import("../api/shots")).default as Handler;
     sessionHandler = (await import("../api/session")).default as Handler;
+    profileHandler = (await import("../api/profile")).default as Handler;
   });
 });
 
@@ -808,6 +846,56 @@ describe("profiles", () => {
       expect(columns.rows.map((c) => c.column_name)).toEqual(
         expect.arrayContaining(["name", "machine", "grinder", "basket", "other"]),
       );
+    } finally {
+      holder.run = runOnMain;
+      forgetSchema();
+      await old.close();
+    }
+  });
+});
+
+describe("upgrading the shots table", () => {
+  it("lets an existing NOT NULL taste column hold 'not tasted'", async () => {
+    const old = await PGlite.create();
+    const known = "cl_" + "b".repeat(43);
+    await old.exec(`
+      create table users (id text primary key, token_hash text not null unique,
+                          created_at timestamptz not null default now());
+      insert into users (id, token_hash) values ('u', '${createHash("sha256").update(known).digest("hex")}');
+      create table entries (id text primary key, coffee text not null default '', roaster text not null default '',
+        origins text not null default '', altitude text not null default '', tasting_notes text not null default '',
+        roast_level text not null default '', roast_date text not null default '', process text not null default '',
+        variety text not null default '', comments text not null default '', machine text not null default '',
+        grinder text not null default '', basket text not null default '', other text not null default '',
+        created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+        user_id text references users (id) on delete cascade);
+      create table shots (id text primary key, entry_id text not null references entries (id) on delete cascade,
+        starred boolean not null default false, grind text not null default '', dose text not null default '',
+        yield_grams text not null default '', time_min text not null default '', time_sec text not null default '',
+        rpm text not null default '', temp text not null default '', infusion text not null default '',
+        pre_soak boolean not null default false, extraction integer not null default 50,
+        notes text not null default '', created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now());
+      insert into entries (id, coffee, user_id) values ('e', 'Old bag', 'u');
+      insert into shots (id, entry_id, dose) values ('old', 'e', '18');
+    `);
+
+    const runOnMain = holder.run;
+    holder.run = async (text, params) => (await old.query(text, params)).rows as Record<string, unknown>[];
+    forgetSchema();
+    try {
+      const sent = await call(shotsHandler, {
+        method: "POST",
+        headers: as(known),
+        body: { entryId: "e", shot: { id: "new", dose: "18.5", extraction: null } },
+      });
+      expect(sent.status).toBe(200);
+      const shots = (await call(entriesHandler, { method: "GET", headers: as(known) })).body.entries[0].shots;
+      // The shot logged before the change keeps the 50 it was stored with.
+      expect(shots.map((s: any) => [s.id, s.extraction])).toEqual([
+        ["old", 50],
+        ["new", null],
+      ]);
     } finally {
       holder.run = runOnMain;
       forgetSchema();

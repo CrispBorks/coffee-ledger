@@ -22,8 +22,14 @@ export type Shot = {
   temp: string;
   infusion: string;
   ps: boolean;
-  extraction: number; // 0–100, under-extracted → over-extracted
+  /** How it tasted, 0 (sour, under-extracted) to 100 (bitter, over-extracted);
+   *  null until it has been tasted. It used to default to 50, which made every
+   *  shot nobody rated look balanced. */
+  extraction: number | null;
   notes: string;
+  /** When it was pulled, in ms. Set by the device that logs it, and what orders
+   *  the shot log — so a deleted shot that's restored goes back where it was. */
+  pulledAt: number;
 };
 
 export type Entry = {
@@ -90,14 +96,14 @@ export const SHOT_TEXT_FIELDS = [
 
 export type ShotTextField = (typeof SHOT_TEXT_FIELDS)[number];
 
-export const EMPTY_SHOT: Omit<Shot, "id"> = {
+export const EMPTY_SHOT: Omit<Shot, "id" | "pulledAt"> = {
   ...(Object.fromEntries(SHOT_TEXT_FIELDS.map((f) => [f, ""])) as Record<
     ShotTextField,
     string
   >),
   starred: false,
   ps: false,
-  extraction: 50,
+  extraction: null,
 };
 
 /** Ids are made in the browser so a new coffee has a URL before the write to
@@ -112,14 +118,19 @@ export function makeId(): string {
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const flag = (value: unknown) => value === true;
 
-/** Clamped rather than rejected: the slider can only produce 0–100, so a value
- *  outside it means something else wrote the row, and the nearest end of the
- *  scale is a better answer than refusing to show the shot at all. */
-const extraction = (value: unknown) => {
+/** Missing means not tasted. Otherwise clamped rather than rejected: the app
+ *  only produces 0–100, so a value outside it means something else wrote the
+ *  row, and the nearest end of the scale beats refusing to show the shot. */
+const extraction = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "") return null;
   const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return 50;
+  if (!Number.isFinite(n)) return null;
   return Math.min(100, Math.max(0, Math.round(n)));
 };
+
+/** A time in ms, or now. */
+const instant = (value: unknown): number =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? value : Date.now();
 
 /** Coerce anything shaped roughly like a shot into a whole one. Used on both
  *  sides: the server won't store a half-filled row, and the client won't hand
@@ -134,6 +145,7 @@ export function toShot(value: unknown): Shot | null {
   shot.starred = flag(raw.starred);
   shot.ps = flag(raw.ps);
   shot.extraction = extraction(raw.extraction);
+  shot.pulledAt = instant(raw.pulledAt);
   return shot;
 }
 
