@@ -15,8 +15,11 @@
  *  edit, that deleting a coffee takes its shots with it, and that a shot
  *  can't be logged against a coffee that isn't there.
  *
- *  There is no key on these routes, so there is nothing to sign in as here —
- *  a request either makes sense to Postgres or it doesn't. */
+ *  Every route needs a token, so each request here carries one; the tests that
+ *  are about the token itself — and about one user not seeing another's
+ *  coffees — are in "accounts" at the end. */
+
+import { createHash } from "node:crypto";
 
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +43,9 @@ vi.mock("@neondatabase/serverless", async () => {
 type Handler = (req: any, res: any) => Promise<void> | void;
 let entriesHandler: Handler;
 let shotsHandler: Handler;
+let sessionHandler: Handler;
+/** The user every test runs as unless it says otherwise. */
+let token = "";
 /** Taken off the module the handlers come from rather than imported at the top
  *  of this file: a static import would evaluate api/entries before beforeAll
  *  sets DATABASE_URL, and every handler test would then find no database. */
@@ -59,7 +65,10 @@ function call(handler: Handler, req: Partial<{ method: string; query: any; heade
     setHeader() {},
   };
   return Promise.resolve(
-    handler({ method: "GET", query: {}, headers: {}, ...req }, res),
+    handler(
+      { method: "GET", query: {}, headers: { authorization: `Bearer ${token}` }, ...req },
+      res,
+    ),
   ).then(() => sent);
 }
 
@@ -70,6 +79,15 @@ const putShot = (entryId: string, shot: Record<string, unknown>) =>
   call(shotsHandler, { method: "POST", body: { entryId, shot } });
 
 const readLedger = () => call(entriesHandler, { method: "GET" });
+
+const as = (who: string) => ({ authorization: `Bearer ${who}` });
+
+/** A new account, the way the app makes one. */
+async function signUp(): Promise<string> {
+  const made = await call(sessionHandler, { method: "POST", headers: {} });
+  expect(made.status).toBe(201);
+  return made.body.token as string;
+}
 
 beforeAll(async () => {
   db = await PGlite.create();
@@ -82,6 +100,11 @@ beforeAll(async () => {
   entriesHandler = entriesModule.default as Handler;
   findConnectionString = entriesModule.findConnectionString;
   shotsHandler = (await import("../api/shots")).default as Handler;
+  sessionHandler = (await import("../api/session")).default as Handler;
+
+  // The first request is what creates the tables, and making an account is a
+  // request — so by the time any test runs, the schema exists.
+  token = await signUp();
 });
 
 afterAll(async () => {
@@ -89,28 +112,37 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  // The tables only exist after the first request creates them.
-  const made = await db.query<{ n: number }>(
-    "select count(*)::int as n from information_schema.tables where table_name in ('entries','shots')",
-  );
-  if (made.rows[0].n === 2) await db.query("delete from entries");
+  // Coffees (and their shots) are cleared between tests; users are kept, so
+  // `token` stays valid for the whole file.
+  await db.query("delete from entries");
 });
 
 describe("the schema bootstraps itself", () => {
-  it("creates both tables and the index on the first request", async () => {
+  it("creates the tables and the index on the first request", async () => {
     const first = await readLedger();
     expect(first.status).toBe(200);
     expect(first.body).toEqual({ entries: [] });
 
     const tables = await db.query<{ table_name: string }>(
-      "select table_name from information_schema.tables where table_name in ('entries','shots') order by 1",
+      "select table_name from information_schema.tables where table_name in ('users','entries','shots') order by 1",
     );
-    expect(tables.rows.map((r) => r.table_name)).toEqual(["entries", "shots"]);
+    expect(tables.rows.map((r) => r.table_name)).toEqual(["entries", "shots", "users"]);
 
     const indexes = await db.query<{ indexname: string }>(
       "select indexname from pg_indexes where tablename = 'shots' order by 1",
     );
     expect(indexes.rows.map((r) => r.indexname)).toContain("shots_entry_id_created_at_idx");
+  });
+
+  it("gives every coffee an owner, and removes a user's coffees with the user", async () => {
+    await putEntry({ id: "mine", coffee: "Mine" });
+    const owned = await db.query<{ user_id: string | null }>("select user_id from entries");
+    expect(owned.rows[0].user_id).toEqual(expect.any(String));
+
+    await db.query("delete from users where id = $1", [owned.rows[0].user_id]);
+    expect((await db.query("select 1 from entries")).rows).toHaveLength(0);
+    // The shared token is gone with its user, so give the file a new one.
+    token = await signUp();
   });
 
   it("declares the cascade rather than relying on the app to tidy up", async () => {
@@ -293,18 +325,6 @@ describe("shots", () => {
 });
 
 describe("what the routes refuse", () => {
-  it("takes a write from anyone who can reach it — there is no key", async () => {
-    // Written down because it is a deliberate property of the deployment
-    // rather than an oversight: keeping the ledger private is a job for
-    // Vercel's Deployment Protection, not a passphrase typed into the app.
-    const sent = await call(entriesHandler, {
-      method: "POST",
-      body: { id: "open", coffee: "No key needed" },
-    });
-    expect(sent.status).toBe(200);
-    expect((await readLedger()).body.entries).toHaveLength(1);
-  });
-
   it("refuses an id it would have to quote", async () => {
     expect((await putEntry({ id: "has spaces" })).status).toBe(400);
     expect((await putEntry({ coffee: "no id at all" })).status).toBe(400);
@@ -341,6 +361,168 @@ describe("what the routes refuse", () => {
     const entry = (await readLedger()).body.entries[0];
     expect(entry.coffee).toBe("Café Náriño ☕️");
     expect(entry.tastingNotes).toBe("🫐 jasmine");
+  });
+});
+
+describe("accounts", () => {
+  it("issues a token of the expected shape, and a different one each time", async () => {
+    const a = await signUp();
+    const b = await signUp();
+    expect(a).toMatch(/^cl_[A-Za-z0-9_-]{43}$/);
+    expect(a).not.toBe(b);
+  });
+
+  it("stores a fingerprint of the token and never the token", async () => {
+    const issued = await signUp();
+    const rows = await db.query<{ token_hash: string }>("select token_hash from users");
+    const hashes = rows.rows.map((r) => r.token_hash);
+
+    expect(hashes).toContain(createHash("sha256").update(issued).digest("hex"));
+    expect(JSON.stringify(rows.rows)).not.toContain(issued);
+    expect(JSON.stringify((await db.query("select * from users")).rows)).not.toContain(issued);
+  });
+
+  it("answers GET /api/session for a good token and 401 for anything else", async () => {
+    expect((await call(sessionHandler, { method: "GET" })).status).toBe(200);
+    expect((await call(sessionHandler, { method: "GET", headers: {} })).status).toBe(401);
+    expect(
+      (await call(sessionHandler, { method: "GET", headers: as("cl_" + "x".repeat(43)) })).status,
+    ).toBe(401);
+    expect((await call(sessionHandler, { method: "GET", headers: as("nonsense") })).status).toBe(401);
+    expect((await call(sessionHandler, { method: "PUT" })).status).toBe(405);
+  });
+
+  describe("every route wants a token", () => {
+    const stranger = "cl_" + "z".repeat(43);
+    // Thunks: the handlers are only assigned once beforeAll has run, which is
+    // after this table is built.
+    const attempts: [string, () => Handler, any][] = [
+      ["GET /api/entries", () => entriesHandler, { method: "GET" }],
+      ["POST /api/entries", () => entriesHandler, { method: "POST", body: { id: "x" } }],
+      ["DELETE /api/entries", () => entriesHandler, { method: "DELETE", query: { id: "x" } }],
+      ["POST /api/shots", () => shotsHandler, { method: "POST", body: { entryId: "x", shot: { id: "s" } } }],
+      ["DELETE /api/shots", () => shotsHandler, { method: "DELETE", query: { id: "s" } }],
+    ];
+
+    it.each(attempts)("%s: refused with no header", async (_name, handlerOf, req) => {
+      const sent = await call(handlerOf(), { ...req, headers: {} });
+      expect(sent.status).toBe(401);
+      expect(sent.body.unauthorized).toBe(true);
+    });
+
+    it.each(attempts)("%s: refused with a well-formed token nobody holds", async (_name, handlerOf, req) => {
+      expect((await call(handlerOf(), { ...req, headers: as(stranger) })).status).toBe(401);
+    });
+
+    it.each(attempts)("%s: refused with a malformed token", async (_name, handlerOf, req) => {
+      expect((await call(handlerOf(), { ...req, headers: as("hunter2") })).status).toBe(401);
+      expect((await call(handlerOf(), { ...req, headers: { authorization: token } })).status).toBe(401);
+    });
+
+    it("writes nothing when it refuses", async () => {
+      await call(entriesHandler, { method: "POST", body: { id: "sneak" }, headers: {} });
+      expect((await db.query("select 1 from entries")).rows).toHaveLength(0);
+    });
+
+    it("accepts the scheme in any case", async () => {
+      const sent = await call(entriesHandler, {
+        method: "GET",
+        headers: { authorization: `bearer ${token}` },
+      });
+      expect(sent.status).toBe(200);
+    });
+  });
+
+  describe("one ledger per token", () => {
+    let other = "";
+    beforeEach(async () => {
+      other = await signUp();
+    });
+
+    const readAs = (who: string) => call(entriesHandler, { method: "GET", headers: as(who) });
+
+    it("shows each person only their own coffees and shots", async () => {
+      await putEntry({ id: "mine", coffee: "Mine" });
+      await putShot("mine", { id: "s1", notes: "mine" });
+      await call(entriesHandler, { method: "POST", headers: as(other), body: { id: "theirs", coffee: "Theirs" } });
+      await call(shotsHandler, {
+        method: "POST",
+        headers: as(other),
+        body: { entryId: "theirs", shot: { id: "s2", notes: "theirs" } },
+      });
+
+      const mine = (await readLedger()).body.entries;
+      const theirs = (await readAs(other)).body.entries;
+      expect(mine.map((e: any) => e.id)).toEqual(["mine"]);
+      expect(mine[0].shots.map((s: any) => s.id)).toEqual(["s1"]);
+      expect(theirs.map((e: any) => e.id)).toEqual(["theirs"]);
+      expect(theirs[0].shots.map((s: any) => s.id)).toEqual(["s2"]);
+    });
+
+    it("starts a new account with an empty ledger", async () => {
+      await putEntry({ id: "mine" });
+      expect((await readAs(other)).body).toEqual({ entries: [] });
+    });
+
+    it("won't let someone else delete a coffee, and says it isn't there", async () => {
+      await putEntry({ id: "mine", coffee: "Mine" });
+      const sent = await call(entriesHandler, { method: "DELETE", headers: as(other), query: { id: "mine" } });
+      expect(sent.status).toBe(404);
+      expect((await readLedger()).body.entries).toHaveLength(1);
+    });
+
+    it("won't let someone overwrite a coffee by reusing its id", async () => {
+      await putEntry({ id: "mine", coffee: "Mine" });
+      const sent = await call(entriesHandler, {
+        method: "POST",
+        headers: as(other),
+        body: { id: "mine", coffee: "Hijacked" },
+      });
+      expect(sent.status).toBe(409);
+      expect((await readLedger()).body.entries[0].coffee).toBe("Mine");
+      expect((await readAs(other)).body.entries).toEqual([]);
+    });
+
+    it("won't let someone log a shot against a coffee that isn't theirs", async () => {
+      await putEntry({ id: "mine" });
+      const sent = await call(shotsHandler, {
+        method: "POST",
+        headers: as(other),
+        body: { entryId: "mine", shot: { id: "intruder" } },
+      });
+      expect(sent.status).toBe(409);
+      expect((await readLedger()).body.entries[0].shots).toEqual([]);
+    });
+
+    it("won't let someone overwrite or delete a shot that isn't theirs", async () => {
+      await putEntry({ id: "mine" });
+      await putShot("mine", { id: "s1", dose: "18" });
+      await call(entriesHandler, { method: "POST", headers: as(other), body: { id: "theirs" } });
+
+      const overwrite = await call(shotsHandler, {
+        method: "POST",
+        headers: as(other),
+        body: { entryId: "theirs", shot: { id: "s1", dose: "99" } },
+      });
+      expect(overwrite.status).toBe(409);
+
+      const removal = await call(shotsHandler, { method: "DELETE", headers: as(other), query: { id: "s1" } });
+      expect(removal.status).toBe(404);
+
+      const shots = (await readLedger()).body.entries[0].shots;
+      expect(shots).toHaveLength(1);
+      expect(shots[0].dose).toBe("18");
+    });
+
+    it("still lets the owner edit and delete their own", async () => {
+      await putEntry({ id: "mine", coffee: "One" });
+      await putShot("mine", { id: "s1", dose: "18" });
+      expect((await putEntry({ id: "mine", coffee: "Two" })).status).toBe(200);
+      expect((await putShot("mine", { id: "s1", dose: "19" })).status).toBe(200);
+      expect((await readLedger()).body.entries[0].shots[0].dose).toBe("19");
+      expect((await call(shotsHandler, { method: "DELETE", query: { id: "s1" } })).status).toBe(200);
+      expect((await call(entriesHandler, { method: "DELETE", query: { id: "mine" } })).status).toBe(200);
+    });
   });
 });
 
@@ -421,5 +603,6 @@ describe("with nothing connected", () => {
     vi.resetModules();
     entriesHandler = (await import("../api/entries")).default as Handler;
     shotsHandler = (await import("../api/shots")).default as Handler;
+    sessionHandler = (await import("../api/session")).default as Handler;
   });
 });

@@ -10,8 +10,12 @@
  *  that dose, not re-post every bag you own — and rows mean a later "every
  *  starred shot on the Niche" is a query, not a scan in JS.
  *
- *  There is no key on these routes. The ledger is open to whoever can reach
- *  the URL, which is a deployment-level question — see the README. */
+ *  Every route needs `Authorization: Bearer <token>`. A token names one user
+ *  and a user owns their own coffees: every query below is scoped to the user
+ *  the token resolves to, so one person's ledger is invisible to another's.
+ *  Tokens come from POST /api/session and only their SHA-256 is stored. */
+
+import { createHash, randomBytes } from "node:crypto";
 
 import { neon } from "@neondatabase/serverless";
 
@@ -83,6 +87,15 @@ let schemaReady: Promise<void> | null = null;
 
 function ensureSchema(sql: Sql): Promise<void> {
   schemaReady ??= (async () => {
+    // Only the hash of a token is kept, so a copy of this table is not a set
+    // of working keys.
+    await sql`
+      create table if not exists users (
+        id         text primary key,
+        token_hash text        not null unique,
+        created_at timestamptz not null default now()
+      )
+    `;
     await sql`
       create table if not exists entries (
         id            text primary key,
@@ -123,6 +136,17 @@ function ensureSchema(sql: Sql): Promise<void> {
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
       )
+    `;
+    // Added after the fact so a database created before accounts existed
+    // upgrades in place. It is nullable for the same reason: a row with no
+    // owner is never returned by any query, rather than breaking the upgrade.
+    await sql`
+      alter table entries
+        add column if not exists user_id text references users (id) on delete cascade
+    `;
+    await sql`
+      create index if not exists entries_user_id_created_at_idx
+        on entries (user_id, created_at desc)
     `;
     // Every read is "the shots for these entries, in the order they were
     // pulled", so that is what the index covers.
@@ -262,6 +286,55 @@ export const message = (error: unknown) =>
 export const one = (value: string | string[] | undefined) =>
   Array.isArray(value) ? value[0] : value;
 
+/* ------------------------------------------------------------------ auth */
+
+/** 32 random bytes, base64url: 43 characters after the prefix. The prefix is
+ *  there so a token pasted into the wrong place is recognisable as one. */
+export const TOKEN_PATTERN = /^cl_[A-Za-z0-9_-]{43}$/;
+
+export const hashToken = (token: string) =>
+  createHash("sha256").update(token).digest("hex");
+
+/** A fast hash is right here, not a password hash: the input is 256 bits of
+ *  randomness, so there is nothing to brute-force, and it lets the lookup be
+ *  an indexed equality instead of a scan. */
+export function newToken(): string {
+  return `cl_${randomBytes(32).toString("base64url")}`;
+}
+
+export function bearerToken(req: Req): string {
+  const header = req.headers.authorization;
+  const value = Array.isArray(header) ? header[0] : header;
+  const match = /^Bearer\s+(\S+)$/i.exec(value ?? "");
+  return match ? match[1] : "";
+}
+
+export const UNAUTHORIZED = {
+  error: "A valid token is needed to open this ledger.",
+  unauthorized: true,
+};
+
+/** The id of the user this request's token belongs to, or null. */
+export async function authenticate(sql: Sql, req: Req): Promise<string | null> {
+  const token = bearerToken(req);
+  // Rejecting a malformed token here keeps junk out of the database round trip.
+  if (!TOKEN_PATTERN.test(token)) return null;
+  const rows = (await sql`
+    select id from users where token_hash = ${hashToken(token)}
+  `) as { id: string }[];
+  return rows[0]?.id ?? null;
+}
+
+/** Make a user and return the only copy of their token that will ever exist. */
+export async function createUser(sql: Sql): Promise<string> {
+  const token = newToken();
+  const id = randomBytes(12).toString("hex");
+  await sql`
+    insert into users (id, token_hash) values (${id}, ${hashToken(token)})
+  `;
+  return token;
+}
+
 export default async function handler(req: Req, res: Res) {
   res.setHeader("Cache-Control", "no-store");
 
@@ -273,14 +346,33 @@ export default async function handler(req: Req, res: Res) {
   const { sql } = opened;
   const method = req.method ?? "GET";
 
+  // Before anything else, including the 405: nobody learns what the route
+  // accepts without a token.
+  let userId: string | null;
+  try {
+    userId = await authenticate(sql, req);
+  } catch (error) {
+    res.status(500).json({ error: `Database error: ${message(error)}` });
+    return;
+  }
+  if (!userId) {
+    res.status(401).json(UNAUTHORIZED);
+    return;
+  }
+
   try {
     if (method === "GET" || method === "HEAD") {
       // Two queries rather than a join: a join repeats every coffee's fourteen
       // text columns once per shot, and the grouping has to happen in JS
       // either way.
       const [entryRows, shotRows] = (await Promise.all([
-        sql`select * from entries order by created_at desc`,
-        sql`select * from shots order by created_at asc, id asc`,
+        sql`select * from entries where user_id = ${userId} order by created_at desc`,
+        sql`
+          select s.* from shots s
+          join entries e on e.id = s.entry_id
+          where e.user_id = ${userId}
+          order by s.created_at asc, s.id asc
+        `,
       ])) as [EntryRow[], ShotRow[]];
 
       const byEntry = new Map<string, Shot[]>();
@@ -321,13 +413,14 @@ export default async function handler(req: Req, res: Res) {
         insert into entries (
           id, coffee, roaster, origins, altitude, tasting_notes,
           roast_level, roast_date, process, variety, comments,
-          machine, grinder, basket, other, created_at
+          machine, grinder, basket, other, created_at, user_id
         ) values (
           ${entry.id}, ${entry.coffee}, ${entry.roaster}, ${entry.origins},
           ${entry.altitude}, ${entry.tastingNotes}, ${entry.roastLevel},
           ${entry.roastDate}, ${entry.process}, ${entry.variety},
           ${entry.comments}, ${entry.machine}, ${entry.grinder},
-          ${entry.basket}, ${entry.other}, to_timestamp(${entry.createdAt} / 1000.0)
+          ${entry.basket}, ${entry.other}, to_timestamp(${entry.createdAt} / 1000.0),
+          ${userId}
         )
         on conflict (id) do update set
           coffee        = excluded.coffee,
@@ -345,8 +438,17 @@ export default async function handler(req: Req, res: Res) {
           basket        = excluded.basket,
           other         = excluded.other,
           updated_at    = now()
+        where entries.user_id = excluded.user_id
         returning *
       `) as EntryRow[];
+
+      // The id exists and it is someone else's. Ids are random, so this is a
+      // collision or a probe; either way the answer is no, and nothing of
+      // theirs was touched.
+      if (rows.length === 0) {
+        res.status(409).json({ error: "That id is already taken." });
+        return;
+      }
 
       res.status(200).json({ entry: rowToEntry(rows[0], entry.shots), saved: entry.id });
       return;
@@ -360,7 +462,7 @@ export default async function handler(req: Req, res: Res) {
       }
 
       const rows = (await sql`
-        delete from entries where id = ${id} returning id
+        delete from entries where id = ${id} and user_id = ${userId} returning id
       `) as { id: string }[];
       if (rows.length === 0) {
         res.status(404).json({ error: `No coffee in the ledger with the id "${id}".` });

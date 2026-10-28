@@ -23,6 +23,7 @@
 
 import { useSyncExternalStore } from "react";
 
+import { authHeader, clearToken, getToken, looksLikeToken, setToken } from "./auth";
 import {
   EMPTY_ENTRY,
   EMPTY_SHOT,
@@ -47,9 +48,10 @@ const REFRESH_AFTER_MS = 15_000;
 
 export type LedgerState = {
   entries: Entry[];
-  /** "loading" until the first read comes back; "unreachable" if it didn't. */
-  status: "loading" | "ready" | "unreachable";
-  /** Why the ledger couldn't be read, when status is "unreachable". */
+  /** "locked" until there is a token this server accepts; "loading" until the
+   *  first read comes back; "unreachable" if it didn't. */
+  status: "locked" | "loading" | "ready" | "unreachable";
+  /** Why the ledger couldn't be read, when status is "unreachable" or "locked". */
   loadError: string;
   /** A write is in flight right now. */
   saving: boolean;
@@ -97,7 +99,10 @@ async function request(
   url: string,
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; data: Payload | null }> {
-  const res = await fetch(url, { ...init, headers: { accept: "application/json", ...init?.headers } });
+  const res = await fetch(url, {
+    ...init,
+    headers: { accept: "application/json", ...authHeader(), ...init?.headers },
+  });
   const body = await res.text();
   let data: Payload | null = null;
   try {
@@ -113,6 +118,14 @@ async function request(
 
 const NOT_RUNNING =
   "The /api routes aren't running. `npm run dev` serves the app only — use `vercel dev`, or a deployment.";
+
+/** The server doesn't know this token — it was never issued, or the account is
+ *  gone. Back to the gate; the ledger on screen belongs to nobody now. */
+function lock(why: string) {
+  patch({ status: "locked", loadError: why, entries: [] });
+}
+
+const REFUSED = "That token isn't recognised.";
 
 /* -------------------------------------------------------------- the queue */
 
@@ -263,6 +276,10 @@ async function send(
     return "done";
   }
   if (res.status === 404 && goneIsFine) return "done";
+  if (res.status === 401) {
+    lock(REFUSED);
+    return { retry: REFUSED };
+  }
 
   const said = res.data?.error;
   if (res.data === null) return { retry: NOT_RUNNING };
@@ -319,6 +336,11 @@ export async function loadLedger(force = false): Promise<void> {
       status: "unreachable",
       loadError: `Couldn't reach the ledger: ${error instanceof Error ? error.message : String(error)}`,
     });
+    return;
+  }
+
+  if (res.status === 401) {
+    lock(REFUSED);
     return;
   }
 
@@ -514,6 +536,100 @@ export function dismissLegacy() {
   patch({ legacy: 0 });
 }
 
+/* ---------------------------------------------------------- who is asking */
+
+/** Forget everything that belongs to whoever was here: the entries on screen
+ *  and every write still on its way. Writes are dropped, not kept — they were
+ *  made under a token that is about to stop being this device's, and sending
+ *  them under the next one would put one person's coffee in another's ledger. */
+function resetLedger(next: Partial<LedgerState> = {}) {
+  for (const waiting of timers.values()) clearTimeout(waiting.timer);
+  timers.clear();
+  queue = [];
+  failed.clear();
+  reconcile = false;
+  loadStarted = false;
+  lastLoad = 0;
+  patch({
+    entries: [],
+    status: "locked",
+    loadError: "",
+    writeError: "",
+    needsSetup: false,
+    ...next,
+  });
+}
+
+/** Ask the server for a brand-new ledger. Nothing is stored yet: the token is
+ *  handed back to be shown, and only becomes this device's once the person
+ *  confirms they've kept it (see signIn). Until then there's nothing in the
+ *  ledger to lose by closing the tab. */
+export async function createAccount(): Promise<{ token: string } | { error: string }> {
+  let res: Awaited<ReturnType<typeof request>>;
+  try {
+    res = await request("/api/session", { method: "POST" });
+  } catch {
+    return { error: "Couldn't reach the server. Check the connection and try again." };
+  }
+
+  if (res.data === null) return { error: NOT_RUNNING };
+  if (res.status === 503) {
+    patch({ needsSetup: true });
+    return { error: res.data.error ?? "Saving isn't set up on this deployment." };
+  }
+  const token = res.data.token;
+  if (!res.ok || typeof token !== "string") {
+    return { error: res.data.error ?? `The server answered ${res.status}.` };
+  }
+  return { token };
+}
+
+/** Check a token with the server and, if it's good, make it this device's and
+ *  load its ledger. A different token than before starts from a clean slate. */
+export async function signIn(raw: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const token = raw.trim();
+  if (!looksLikeToken(token)) {
+    return { ok: false, error: "That doesn't look like a ledger token. It starts with cl_." };
+  }
+
+  let res: Awaited<ReturnType<typeof request>>;
+  try {
+    res = await request("/api/session", { headers: { authorization: `Bearer ${token}` } });
+  } catch {
+    return { ok: false, error: "Couldn't reach the server. Check the connection and try again." };
+  }
+  if (res.status === 401) return { ok: false, error: REFUSED };
+  if (res.data === null) return { ok: false, error: NOT_RUNNING };
+  if (!res.ok) {
+    if (res.status === 503) patch({ needsSetup: true });
+    return { ok: false, error: res.data.error ?? `The server answered ${res.status}.` };
+  }
+
+  if (!setToken(token)) {
+    return {
+      ok: false,
+      error: "This browser won't store the token (private mode?), so the ledger would lock itself on reload.",
+    };
+  }
+  // Same token as already loaded: keep the queue and the screen as they are.
+  if (token !== currentToken) resetLedger({ status: "loading" });
+  currentToken = token;
+  await loadLedger(true);
+  return { ok: true };
+}
+
+/** Take this device out of the ledger. The token isn't revoked — it still works
+ *  anywhere it's been kept — but this browser forgets it. */
+export function signOut() {
+  clearToken();
+  currentToken = "";
+  resetLedger();
+}
+
+/** The token the loaded ledger belongs to, so signing in again with the same
+ *  one doesn't throw away work that hasn't landed yet. */
+let currentToken = getToken();
+
 /* ----------------------------------------------------------------- hooks */
 
 const getState = () => state;
@@ -566,7 +682,10 @@ export function bestShots(entry: Entry): Shot[] {
 
 if (typeof window !== "undefined") {
   patch({ legacy: countLegacy() });
-  void loadLedger();
+  // No token, nothing to ask for — go straight to the gate rather than making
+  // a request that can only come back 401.
+  if (getToken()) void loadLedger();
+  else patch({ status: "locked" });
 
   // A tab going away takes its debounce timers with it, so spend them first.
   // pagehide, not beforeunload: it's the one iOS Safari actually fires.

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { PlusIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { SignOutButton } from "@/components/sign-out-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 export function SiteHeader() {
@@ -11,7 +12,10 @@ export function SiteHeader() {
         <Link to="/" className="display text-[28px] leading-none font-semibold">
           Coffee Ledger
         </Link>
-        <ThemeToggle />
+        <div className="flex items-center">
+          <ThemeToggle />
+          <SignOutButton />
+        </div>
       </div>
 
       <nav aria-label="Actions" className="mt-4 flex items-center gap-2">

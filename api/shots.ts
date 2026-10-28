@@ -8,10 +8,16 @@
  *
  *  The whole shot log is edited in place, a field at a time, which is why a
  *  shot is addressable on its own: the client coalesces the keystrokes in one
- *  cell and writes that shot, rather than re-posting the coffee around it. */
+ *  cell and writes that shot, rather than re-posting the coffee around it.
+ *
+ *  A shot belongs to a coffee and a coffee belongs to a user, so ownership is
+ *  checked through the coffee: you can only log against your own, and only
+ *  touch shots that hang off your own. */
 
 import { ID_PATTERN, toShot } from "../src/lib/ledger-types.js";
 import {
+  UNAUTHORIZED,
+  authenticate,
   connect,
   message,
   one,
@@ -46,6 +52,12 @@ export default async function handler(req: Req, res: Res) {
   const { sql } = opened;
 
   try {
+    const userId = await authenticate(sql, req);
+    if (!userId) {
+      res.status(401).json(UNAUTHORIZED);
+      return;
+    }
+
     if (method === "POST") {
       const body = (req.body ?? {}) as { entryId?: unknown; shot?: unknown };
       const entryId = typeof body.entryId === "string" ? body.entryId : "";
@@ -58,6 +70,18 @@ export default async function handler(req: Req, res: Res) {
       if (!shot) {
         res.status(400).json({
           error: "A shot needs an id of letters, numbers, dashes or underscores.",
+        });
+        return;
+      }
+
+      // Someone else's coffee and a coffee that doesn't exist look the same
+      // from here, and get the same answer — nothing says which it was.
+      const owned = (await sql`
+        select 1 as ok from entries where id = ${entryId} and user_id = ${userId}
+      `) as unknown[];
+      if (owned.length === 0) {
+        res.status(409).json({
+          error: "That coffee is no longer in the ledger, so the shot wasn't saved.",
         });
         return;
       }
@@ -89,8 +113,19 @@ export default async function handler(req: Req, res: Res) {
           extraction  = excluded.extraction,
           notes       = excluded.notes,
           updated_at  = now()
+        where exists (
+          select 1 from entries e
+          where e.id = shots.entry_id and e.user_id = ${userId}
+        )
         returning *
       `) as ShotRow[];
+
+      // The shot id is already in use under someone else's coffee. The
+      // update's guard declined to overwrite it.
+      if (rows.length === 0) {
+        res.status(409).json({ error: "That id is already taken." });
+        return;
+      }
 
       res.status(200).json({ shot: rowToShot(rows[0]), entryId, saved: shot.id });
       return;
@@ -103,7 +138,10 @@ export default async function handler(req: Req, res: Res) {
     }
 
     const rows = (await sql`
-      delete from shots where id = ${id} returning id
+      delete from shots s
+      using entries e
+      where s.id = ${id} and e.id = s.entry_id and e.user_id = ${userId}
+      returning s.id
     `) as { id: string }[];
     if (rows.length === 0) {
       res.status(404).json({ error: `No shot in the ledger with the id "${id}".` });

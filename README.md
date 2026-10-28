@@ -12,8 +12,10 @@ Entries live in Postgres, behind two serverless functions in `api/`. The ledger
 follows you between the phone and the laptop, and clearing site data no longer
 clears it.
 
-There is nothing to sign in to and nothing to type once. Open it, add a coffee,
-it's saved.
+Each ledger belongs to a **token**. The first time you open the site it asks for
+one: paste a token you already have, or start a new ledger and the app generates
+one and shows it to you once. Keep it somewhere safe — it's the only key. Past
+that screen, open it, add a coffee, it's saved.
 
 There is no Save button, and there wasn't one before either — the shot log is
 edited in place, a cell at a time, and that hasn't changed. What happens under
@@ -76,23 +78,51 @@ step, no seed, and no second environment variable.
 Skip it and the ledger still loads; it just says plainly that saving isn't set
 up rather than pretending an edit was stored.
 
-### Who can write to it
+### Tokens
 
-Nobody has to type anything, which is the point — and it means the routes are
-open to whoever can reach the URL. Reads were always public; now writes are too.
+A token is `cl_` followed by 43 random characters (256 bits). It is the whole
+account model: no email, no password.
 
-Keeping the ledger private is a deployment setting rather than something the app
-asks you for. Vercel's **Deployment Protection** (Project → Settings →
-Deployment Protection) puts your Vercel login, or a password, in front of the
-whole site — functions included. It's a toggle, and unlike a key in the app
-there's nothing for the app to store and nothing to re-enter on a new phone.
-Check which methods your plan includes; the login one is the widely available
-default, password protection has been a paid feature.
+- **Making one.** `POST /api/session` creates a user and returns the token. That
+  response is the only time it exists in readable form — the database stores its
+  SHA-256, so a copy of the database is not a set of working keys, and there is
+  nothing to look up or reset if one is lost. The app says so and makes you tick
+  "I've saved it" before it will open the ledger.
+- **Using one.** Every request carries `Authorization: Bearer <token>`. The
+  browser keeps it in `localStorage` (`coffeeLedger.token`), so you stay in on
+  that device and have to paste it once on each new one.
+- **Isolation.** Every query is scoped to the user the token resolves to. Another
+  user's coffees and shots are not returned, cannot be deleted, and cannot be
+  overwritten by reusing an id.
+- **Locking a device.** The lock button in the header makes the browser forget
+  its token. It doesn't revoke it; it still works anywhere it's been kept.
+
+What this does *not* do: there is no recovery, no revocation and no rate limit,
+and `POST /api/session` is open — anyone who can reach the site can make an
+(empty) ledger. If that matters, put Vercel's Deployment Protection in front of
+the site or add a signup limit.
+
+#### Upgrading a database from before tokens
+
+The schema upgrades itself: `users` is created, and `entries` gets a nullable
+`user_id`. Coffees saved before tokens existed have no owner, so no token can
+see them — they are still in the table. To hand them to a ledger, make a token
+in the app, then in the Neon console:
+
+```sql
+update entries set user_id = (select id from users order by created_at desc limit 1)
+where user_id is null;
+```
 
 ### The routes
 
+Everything except `POST /api/session` needs `Authorization: Bearer <token>` and answers
+`401` without one.
+
 | | |
 | --- | --- |
+| `POST /api/session` | make a new ledger, return its token (once) |
+| `GET /api/session` | 200 if the token in the header is valid, else 401 |
 | `GET /api/entries` | every coffee, newest first, each with its shot log |
 | `POST /api/entries` | add or replace one coffee, by id |
 | `DELETE /api/entries?id=` | remove a coffee and every shot logged against it |
@@ -129,14 +159,18 @@ loads the same handler files rather than a copy of them.
 npm test        # ~4s, no browser and no deployment needed
 ```
 
-Three suites, covering the parts that could quietly lose someone's shot log:
+Four suites, covering the parts that could quietly lose someone's shot log:
 
 - **The write queue** in `src/lib/ledger.ts` — ordering, coalescing, flush on
   close, and what happens to a write the server refuses. Driven against a
   stubbed `fetch`.
+- **The token** in `tests/auth.test.ts` — what the client sends, and what it
+  does when the server says no or the device is locked.
 - **The shapes crossing the wire** in `src/lib/ledger-types.ts`, which is what
   stops a partial write blanking a column it didn't mention.
-- **The routes**, against a real Postgres. `tests/api.test.ts` runs the
+- **The routes**, against a real Postgres, including that every route refuses a
+  missing or wrong token and that one user can't read, overwrite or delete
+  another's coffees and shots. `tests/api.test.ts` runs the
   handlers in `api/` over [PGlite](https://pglite.dev) — Postgres 18 compiled
   to wasm — so the SQL is executed rather than described: the tables really are
   created, an upsert really does update instead of duplicating, `created_at`

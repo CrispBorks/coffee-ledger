@@ -23,6 +23,7 @@ import type { Connect, Plugin } from "vite";
 const ROUTES: Record<string, string> = {
   "/api/entries": "/api/entries.ts",
   "/api/shots": "/api/shots.ts",
+  "/api/session": "/api/session.ts",
 };
 
 const CONNECTION_VARS = ["DATABASE_URL", "POSTGRES_URL", "DATABASE_URL_UNPOOLED"];
