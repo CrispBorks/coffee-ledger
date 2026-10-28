@@ -12,8 +12,18 @@ import {
 
 describe("toShot", () => {
   it("fills in every field a partial shot left out", () => {
+    const before = Date.now();
     const shot = toShot({ id: "abc", dose: "18" });
-    expect(shot).toEqual({ ...EMPTY_SHOT, id: "abc", dose: "18" });
+    expect(shot).toEqual({ ...EMPTY_SHOT, id: "abc", dose: "18", pulledAt: expect.any(Number) });
+    // No pulledAt sent means it was pulled now.
+    expect(shot!.pulledAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it("keeps the moment a shot was pulled", () => {
+    expect(toShot({ id: "a", pulledAt: 1_700_000_000_123 })?.pulledAt).toBe(1_700_000_000_123);
+    for (const junk of [0, -5, "yesterday", Number.NaN]) {
+      expect(toShot({ id: "a", pulledAt: junk })?.pulledAt, String(junk)).toBeGreaterThan(0);
+    }
   });
 
   it("refuses a shot without a usable id", () => {
@@ -37,12 +47,19 @@ describe("toShot", () => {
     expect(toShot({ id: "a", ps: 1 })?.ps).toBe(false);
   });
 
-  it("clamps extraction onto the slider's scale", () => {
+  it("clamps a taste onto the 0–100 scale", () => {
     expect(toShot({ id: "a", extraction: -20 })?.extraction).toBe(0);
     expect(toShot({ id: "a", extraction: 900 })?.extraction).toBe(100);
     expect(toShot({ id: "a", extraction: 61.6 })?.extraction).toBe(62);
-    expect(toShot({ id: "a", extraction: "nope" })?.extraction).toBe(50);
-    expect(toShot({ id: "a" })?.extraction).toBe(50);
+  });
+
+  it("reads a missing taste as not tasted, never as balanced", () => {
+    // It used to default to 50 — the middle of the scale — so every shot nobody
+    // rated looked balanced.
+    for (const missing of [undefined, null, "", "nope"]) {
+      expect(toShot({ id: "a", extraction: missing })?.extraction, String(missing)).toBeNull();
+    }
+    expect(toShot({ id: "a" })?.extraction).toBeNull();
   });
 });
 

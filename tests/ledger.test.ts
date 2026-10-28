@@ -244,3 +244,78 @@ describe("when a write does not land", () => {
     expect(ledger.ledgerState().failed).toBe(0);
   });
 });
+
+describe("logging and undoing shots", () => {
+  it("logs a shot with everything filled in as one write", async () => {
+    const ledger = await freshLedger([{ id: "a", coffee: "Kochere" }]);
+    ledger.addShot("a", { dose: "18", yield: "40", timeSec: "28", grind: "3.2", extraction: 30 });
+
+    await until(() => ledger.ledgerState().unsaved === 0, "the shot write");
+    const writes = posts("/api/shots");
+    expect(writes).toHaveLength(1);
+    expect(writes[0].body.shot).toMatchObject({
+      dose: "18",
+      yield: "40",
+      timeSec: "28",
+      grind: "3.2",
+      extraction: 30,
+    });
+    expect(writes[0].body.shot.pulledAt).toBeGreaterThan(0);
+  });
+
+  it("starts a shot as not tasted", async () => {
+    const ledger = await freshLedger([{ id: "a" }]);
+    ledger.addShot("a", { dose: "18" });
+    expect(ledger.ledgerState().entries[0].shots[0].extraction).toBeNull();
+  });
+
+  it("puts an undone delete back in its place in the log", async () => {
+    const ledger = await freshLedger([
+      {
+        id: "a",
+        shots: [
+          { id: "s1", pulledAt: 1_000 },
+          { id: "s2", pulledAt: 2_000 },
+          { id: "s3", pulledAt: 3_000 },
+        ],
+      },
+    ]);
+    const removed = ledger.deleteShot("a", "s2");
+    expect(removed?.id).toBe("s2");
+    await until(() => ledger.ledgerState().unsaved === 0, "the delete");
+
+    ledger.restoreShot("a", removed!);
+    expect(ledger.ledgerState().entries[0].shots.map((s) => s.id)).toEqual(["s1", "s2", "s3"]);
+
+    await until(() => ledger.ledgerState().unsaved === 0, "the restore");
+    const restored = posts("/api/shots").at(-1)?.body.shot;
+    // Same id and the same pull time, so the server files it where it was.
+    expect(restored).toMatchObject({ id: "s2", pulledAt: 2_000 });
+  });
+
+  it("never tells the server when the undo beats the delete out of the door", async () => {
+    const ledger = await freshLedger([{ id: "a", shots: [{ id: "s1", pulledAt: 1_000 }] }]);
+    // Hold the network so the delete is still queued when Undo is tapped.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      await gate;
+      return original(...args);
+    }) as typeof fetch;
+
+    ledger.addShot("a", { dose: "18" }); // occupies the one in-flight slot
+    const removed = ledger.deleteShot("a", "s1")!;
+    ledger.restoreShot("a", removed);
+    release();
+
+    await until(() => ledger.ledgerState().unsaved === 0, "the queue to drain");
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    expect(ledger.ledgerState().entries[0].shots.map((s) => s.id)[0]).toBe("s1");
+  });
+
+  it("returns nothing for a shot that isn't there", async () => {
+    const ledger = await freshLedger([{ id: "a" }]);
+    expect(ledger.deleteShot("a", "nope")).toBeUndefined();
+  });
+});

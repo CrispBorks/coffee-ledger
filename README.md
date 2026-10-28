@@ -69,6 +69,13 @@ weighed" and `~18.2` means what it says; a number column turns the first into a
 zero and refuses the second. Averaging them is a job for a view over the table,
 when there's something worth averaging.
 
+Two shot columns carry meaning beyond their type. `extraction` is the taste, 0
+(sour) to 100 (bitter) in five steps of 20 — and `null` means *not tasted yet*.
+Shots logged before that existed default to 50, so an old "balanced" may just be
+a shot nobody rated. `created_at` is when the shot was pulled, as the device
+that logged it saw it, and it orders the log; it never changes on an edit, which
+is also how an undone delete goes back in its place.
+
 ## Deploying
 
 A static single-page build on Vercel, plus `api/`. `vercel.json` rewrites every

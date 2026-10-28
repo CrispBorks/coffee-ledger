@@ -86,17 +86,19 @@ export default async function handler(req: Req, res: Res) {
         return;
       }
 
-      // created_at is left alone on update: it is what orders the shot log, so
-      // correcting a dose must not move that shot to the bottom of the table.
+      // created_at comes from the device that logged the shot (pulledAt), so
+      // a deleted shot that's restored goes back to its place rather than to
+      // the end. It is never changed on update: it orders the shot log, and
+      // correcting a dose must not move that shot to the bottom.
       const rows = (await sql`
         insert into shots (
           id, entry_id, starred, grind, dose, yield_grams, time_min, time_sec,
-          rpm, temp, infusion, pre_soak, extraction, notes
+          rpm, temp, infusion, pre_soak, extraction, notes, created_at
         ) values (
           ${shot.id}, ${entryId}, ${shot.starred}, ${shot.grind}, ${shot.dose},
           ${shot.yield}, ${shot.timeMin}, ${shot.timeSec}, ${shot.rpm},
           ${shot.temp}, ${shot.infusion}, ${shot.ps}, ${shot.extraction},
-          ${shot.notes}
+          ${shot.notes}, to_timestamp(${shot.pulledAt} / 1000.0)
         )
         on conflict (id) do update set
           entry_id    = excluded.entry_id,
